@@ -36,6 +36,7 @@ On refresh the plugin runs stock `omarchy-agent-usage-update` (Claude, Codex, Fi
 
 | Collector | What it adds |
 |---|---|
+| `grok` | SuperGrok weekly pool + local session tokens |
 | `antigravity` | Gemini / Claude / GPT quotas via `agy` |
 | `hermes` | Tokens by model from local Hermes sessions |
 
