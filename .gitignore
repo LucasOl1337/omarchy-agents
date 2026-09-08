@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.stfolder
+.stignore
+.stversions
+*.sync-conflict-*

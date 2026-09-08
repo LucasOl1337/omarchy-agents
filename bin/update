@@ -1,0 +1,72 @@
+#!/bin/bash
+# Run stock Omarchy collectors, then this plugin's extra agents.
+
+set -u
+DIR=$(cd "$(dirname "$0")" && pwd)
+USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+mkdir -p "$USAGE_DIR"
+
+flags=()
+only=()
+declare -A excluded
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --force | --limits-only) flags+=("$1") ;;
+  --except)
+    excluded[$2]=1
+    shift
+    ;;
+  *) only+=("$1") ;;
+  esac
+  shift
+done
+
+wanted() {
+  local agent="$1"
+  [[ -n ${excluded[$agent]-} ]] && return 1
+  (( ${#only[@]} == 0 )) && return 0
+  local candidate
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
+
+status=0
+if (( ${#only[@]} == 0 )); then
+  omarchy-agent-usage-update "${flags[@]}" || status=$?
+else
+  stock=()
+  for agent in "${only[@]}"; do
+    case "$agent" in
+    antigravity | hermes | all) ;;
+    *) stock+=("$agent") ;;
+    esac
+  done
+  if (( ${#stock[@]} > 0 )); then
+    omarchy-agent-usage-update "${flags[@]}" "${stock[@]}" || status=$?
+  fi
+fi
+
+collect() {
+  local collector="$1" agent="$2"
+  local record tmp
+  if ! record=$("$collector" "${flags[@]}") || [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+    echo "lol.agents: $agent collector failed" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$USAGE_DIR/.$agent.XXXXXX")
+  printf '%s\n' "$record" >"$tmp"
+  chmod 600 "$tmp"
+  mv "$tmp" "$USAGE_DIR/$agent.json"
+}
+
+for agent in antigravity hermes; do
+  wanted "$agent" || continue
+  collector="$DIR/omarchy-agent-usage-$agent"
+  [[ -x $collector ]] || continue
+  collect "$collector" "$agent" || status=1
+done
+
+exit "$status"
