@@ -312,22 +312,22 @@ Panel {
     var start = periodStartDate(kind)
     var today = root.todayDate()
     var hist = p.history || []
-    var usage = ({})
+    var tokenUsage = ({})
     var todayCovered = false
     for (var h = 0; h < hist.length; h++) {
       var row = hist[h] || {}
       var date = String(row.date || "")
       if (start !== "" && date < start) continue
       var models = row.tokensByModel || ({})
-      var before = usageMapTotal(usage)
-      for (var mid in models) addTokenValue(usage, mid, models[mid])
-      if (date === today && usageMapTotal(usage) > before) todayCovered = true
+      var before = usageMapTotal(tokenUsage)
+      for (var mid in models) addTokenValue(tokenUsage, mid, models[mid])
+      if (date === today && usageMapTotal(tokenUsage) > before) todayCovered = true
     }
     if (!todayCovered && usage.todayFieldsAreCurrent && usage.todayFieldsAreCurrent(p)) {
       var todayModels = p.todayTokensByModel || ({})
-      for (var tid in todayModels) addTokenValue(usage, tid, todayModels[tid])
+      for (var tid in todayModels) addTokenValue(tokenUsage, tid, todayModels[tid])
     }
-    return usage
+    return tokenUsage
   }
 
   function dayName(date) {
