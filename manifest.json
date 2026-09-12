@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "lol.agents",
   "name": "Agents",
-  "version": "1.3.0",
+  "version": "1.4.1",
   "author": "LucasOl",
   "license": "MIT",
   "description": "Uso de agentes e inspe\u00e7\u00e3o compacta por projeto, com pr\u00e9vias locais e detalhes sob demanda.",
@@ -40,6 +40,15 @@
           "enabled": true
         },
         "fireworks": {
+          "enabled": true
+        },
+        "cursor": {
+          "enabled": true
+        },
+        "devin": {
+          "enabled": true
+        },
+        "opencode": {
           "enabled": true
         }
       },

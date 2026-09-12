@@ -402,6 +402,7 @@ def scan_sessions(sessions_root: Path) -> tuple[dict[str, Any], bool]:
   today_sessions: set[str] = set()
   active_days: set[str] = set()
   counted: set[tuple[str, str]] = set()
+  history_models: dict[str, dict[str, int]] = {}
   prompts = 0
   today_prompts = 0
   today_total = 0
@@ -433,6 +434,8 @@ def scan_sessions(sessions_root: Path) -> tuple[dict[str, Any], bool]:
       bucket["outputTokens"] += output_tokens
       bucket["cacheReadInputTokens"] += cache_read
       bucket["cacheCreationInputTokens"] += cache_write
+      by_model = history_models.setdefault(day, {})
+      by_model[model] = by_model.get(model, 0) + total
       if day in recent:
         recent[day] += total
       if day == today:
@@ -450,6 +453,14 @@ def scan_sessions(sessions_root: Path) -> tuple[dict[str, Any], bool]:
   stats["activeDays"] = len(active_days)
   stats["activeDates"] = sorted(active_days)
   stats["recentDays"] = [{"date": day, "messageCount": recent[day]} for day in recent_dates]
+  stats["history"] = [
+    {
+      "date": day,
+      "messageCount": sum(by_model.values()),
+      "tokensByModel": by_model,
+    }
+    for day, by_model in sorted(history_models.items())
+  ]
   return stats, complete
 
 

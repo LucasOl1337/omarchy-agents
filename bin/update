@@ -40,7 +40,7 @@ else
   stock=()
   for agent in "${only[@]}"; do
     case "$agent" in
-    antigravity | grok | hermes | all) ;;
+    antigravity | grok | hermes | cursor | devin | opencode | all) ;;
     *) stock+=("$agent") ;;
     esac
   done
@@ -62,7 +62,7 @@ collect() {
   mv "$tmp" "$USAGE_DIR/$agent.json"
 }
 
-for agent in grok antigravity hermes; do
+for agent in grok antigravity hermes cursor devin opencode; do
   wanted "$agent" || continue
   collector="$DIR/omarchy-agent-usage-$agent"
   [[ -x $collector ]] || continue
