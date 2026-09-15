@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Omarchy Agents · lol.agents</title>
+<meta name="description" content="Painel Agents mais completo para Omarchy: aba All, filtros Day/Week/Month/Total, Projetos, Tempo real e coletores extras (Grok, Antigravity, Hermes, Cursor, OpenCode, Devin). Plugin id lol.agents.">
+<meta property="og:title" content="Omarchy Agents: um ícone, todo harness">
+<meta property="og:description" content="Stock mostra Claude, Codex e Fireworks na semana. Este painel soma todo mundo, com Day/Week/Month/Total e inspeção local por projeto.">
+<meta property="og:image" content="media/poster.jpg">
+<meta property="og:type" content="website">
+<link rel="icon" href="media/logo.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#121212;--sf:#1e1e1e;--sf2:#181818;--sf3:#2a2a2a;--bd:#2a2a2a;--bds:#333333;
+  --ink:#bebebe;--ink2:#8a8a8d;--ink3:#555555;--acc:#e68e0d;--acch:#f59e0b;--gra:#0d0d0d;
+  --urg:#D35F5F;--max:1120px;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:Inter,"Noto Sans","Segoe UI",system-ui,sans-serif;font-size:17px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--acc);text-decoration:none}a:hover{text-decoration:underline}
+.wrap{max-width:var(--max);margin:0 auto;padding:0 24px}
+code,.mono{font-family:"JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,monospace}
+
+.nav{display:flex;align-items:center;justify-content:space-between;padding:22px 0}
+.brand{display:flex;align-items:center;gap:12px;font-weight:600;letter-spacing:.18em;font-size:13px;color:var(--ink);text-transform:uppercase}
+.brand img{width:28px;height:28px}
+.nav .links{display:flex;gap:22px;font-size:14px}
+.nav .links a{color:var(--ink2)}.nav .links a:hover{color:var(--ink);text-decoration:none}
+.btn{display:inline-flex;align-items:center;gap:10px;padding:13px 22px;border-radius:10px;font-weight:600;font-size:15px;border:1px solid transparent;transition:.15s}
+.btn.acc{background:var(--acc);color:#121212}.btn.acc:hover{background:var(--acch);text-decoration:none}
+.btn.ghost{border-color:var(--bds);color:var(--ink2)}.btn.ghost:hover{background:var(--sf);text-decoration:none;color:var(--ink)}
+
+.hero{padding:64px 0 36px;display:grid;grid-template-columns:1.05fr .95fr;gap:48px;align-items:center}
+.k{font-size:13px;letter-spacing:.22em;font-weight:600;color:var(--ink2);text-transform:uppercase;margin:0 0 18px}
+h1{font-size:clamp(40px,5.8vw,72px);line-height:1.04;letter-spacing:-.03em;margin:0 0 20px;font-weight:800}
+h1 b{color:var(--acc);font-weight:800}
+.lead{font-size:19px;color:var(--ink2);max-width:540px;margin:0 0 28px}
+.cta{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.cta small{color:var(--ink3);font-size:13px;width:100%;margin-top:4px}
+.video{position:relative;border-radius:14px;overflow:hidden;background:#000;border:1px solid var(--bd);box-shadow:0 24px 70px rgba(0,0,0,.45)}
+.video video{display:block;width:100%;height:auto}
+.vcap{color:var(--ink3);font-size:13.5px;margin:10px 0 0}
+
+.pillars{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin:56px 0 0}
+.card{background:var(--sf);border:1px solid var(--bd);border-radius:14px;padding:24px}
+.card h3{margin:12px 0 8px;font-size:19px;letter-spacing:-.01em}
+.card p{margin:0;color:var(--ink2);font-size:15.5px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--acc);box-shadow:0 0 0 7px rgba(230,142,13,.14)}
+
+section{padding:84px 0 0}
+h2{font-size:clamp(28px,3.8vw,42px);line-height:1.08;letter-spacing:-.02em;margin:0 0 14px;font-weight:800}
+.sub{color:var(--ink2);font-size:18px;max-width:640px;margin:0 0 34px}
+.feat{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center;margin-top:40px}
+.feat.rev .shot{order:-1}
+.feat h3{font-size:24px;letter-spacing:-.015em;margin:0 0 10px}
+.feat p{color:var(--ink);margin:0 0 12px}
+.feat ul{margin:12px 0 0;padding-left:18px;color:var(--ink2)}
+.feat li{margin:6px 0}
+.shot{border-radius:12px;overflow:hidden;border:1px solid var(--bd);background:var(--sf);box-shadow:0 18px 50px rgba(0,0,0,.4)}
+.shot img{display:block;width:100%;height:auto}
+.shot.wide{grid-column:1 / -1}
+.cap{color:var(--ink3);font-size:13px;margin:8px 0 0}
+
+.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.step{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:20px}
+.step .n{font-family:"JetBrains Mono",monospace;color:var(--acc);font-size:13px;margin-bottom:10px}
+.step h4{margin:0 0 6px;font-size:16px}.step p{margin:0;color:var(--ink2);font-size:14.5px}
+
+.nums{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-top:36px}
+.num{background:var(--sf2);border:1px solid var(--bd);border-radius:12px;padding:20px}
+.num b{display:block;font-size:32px;letter-spacing:-.02em;font-weight:800;color:var(--ink)}
+.num span{color:var(--ink2);font-size:13.5px}
+
+table{width:100%;border-collapse:collapse;margin-top:34px;background:var(--sf);border:1px solid var(--bd);border-radius:14px;overflow:hidden}
+th,td{padding:14px 16px;text-align:left;border-bottom:1px solid var(--bd);font-size:15px;vertical-align:top}
+th{color:var(--ink2);font-weight:600;font-size:12px;letter-spacing:.12em;text-transform:uppercase;background:var(--sf2)}
+tr:last-child td{border-bottom:0}
+td.y{color:var(--ink)}td.n{color:var(--ink3)}
+td:first-child{color:var(--ink2);width:34%}
+.foot-note{color:var(--ink3);font-size:13.5px;margin-top:12px}
+.foot-note a{color:var(--ink2)}
+
+pre{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:18px 20px;overflow:auto;font-size:14px;line-height:1.6;color:var(--ink);margin:0}
+pre .c{color:var(--ink3)}pre .a{color:var(--acc)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:28px}
+.two h4{margin:0 0 10px;font-size:13px;letter-spacing:.14em;color:var(--ink2);text-transform:uppercase}
+
+footer{margin-top:96px;padding:40px 0 60px;border-top:1px solid var(--bd);color:var(--ink3);font-size:14px;display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+.barshot{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:18px;overflow:hidden}
+.barshot img{display:block;width:100%;height:auto}
+
+@media (max-width:900px){
+  .hero{grid-template-columns:1fr;padding-top:32px}
+  .pillars,.flow,.nums,.two{grid-template-columns:1fr 1fr}
+  .feat{grid-template-columns:1fr}.feat.rev .shot{order:0}
+  .nav .links{display:none}
+}
+@media (max-width:560px){.pillars,.flow,.nums,.two{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav class="nav">
+    <a class="brand" href="#"><img src="media/logo.png" alt="">lol.agents</a>
+    <div class="links">
+      <a href="#como">Como funciona</a>
+      <a href="#telas">Telas</a>
+      <a href="#numeros">Números</a>
+      <a href="#compare">Comparar</a>
+      <a href="#instalar">Instalar</a>
+      <a href="https://github.com/LucasOl1337/omarchy-agents">GitHub ↗</a>
+    </div>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <p class="k">Plugin Omarchy · id lol.agents · v1.4.1</p>
+      <h1>Um ícone.<br>Todo <b>harness</b>.</h1>
+      <p class="lead">Stock mostra Claude, Codex e Fireworks na última semana. Este painel soma todo mundo na aba All, filtra Day / Week / Month / Total e abre as sessões locais em Projetos e Tempo real.</p>
+      <div class="cta">
+        <a class="btn acc" href="#instalar">Instalar no Omarchy</a>
+        <a class="btn ghost" href="https://github.com/LucasOl1337/omarchy-agents">Ver o código</a>
+        <small>MIT. Não é o widget stock <span class="mono">omarchy.agents</span>. O id é <span class="mono">lol.agents</span> de propósito, pra os dois poderem coexistir.</small>
+      </div>
+    </div>
+    <div>
+      <div class="video">
+        <video controls playsinline preload="metadata" poster="media/poster.jpg">
+          <source src="media/omarchy-agents-promo-web.mp4" type="video/mp4">
+        </video>
+      </div>
+      <p class="vcap">Narração: Lucas Oliveira, OFICIAL #1. Gravação do painel real numa instância de demonstração isolada, 15 set 2026. Nada simulado na edição.</p>
+    </div>
+  </header>
+
+  <div class="pillars">
+    <div class="card"><div class="dot"></div><h3>Aba All</h3><p>Soma cada harness ligado. Cota continua por conta; o All não mistura limite de Claude com o de Grok.</p></div>
+    <div class="card"><div class="dot"></div><h3>Day, Week, Month, Total</h3><p>Semana é o padrão. Total é o acumulado do coletor, não a janela da cota. Day não pinta leftover de ontem como hoje.</p></div>
+    <div class="card"><div class="dot"></div><h3>Seis coletores a mais</h3><p>Grok, Antigravity, Hermes, Cursor, OpenCode e Devin, além de Claude, Codex e Fireworks que o stock já tinha.</p></div>
+  </div>
+
+  <section id="como">
+    <h2>Como funciona</h2>
+    <p class="sub">O painel só desenha. Quem escreve os JSON é o updater, no disco local. Sem rede na inspeção de projeto.</p>
+    <div class="flow">
+      <div class="step"><div class="n">01</div><h4>Coleta</h4><p>No refresh, roda o updater stock e depois os extras em <span class="mono">bin/</span>. Cada harness vira um JSON em <span class="mono">~/.local/state/omarchy/agents/usage/</span>.</p></div>
+      <div class="step"><div class="n">02</div><h4>Barra</h4><p>Um ícone de robô. Clique esquerdo abre o painel, direito lança o agente, meio cicla a assinatura.</p></div>
+      <div class="step"><div class="n">03</div><h4>Filtro</h4><p>All / Claude / Codex / Grok / … e Day / Week / Month / Total. Atalhos 1 a 4 ou D W M T.</p></div>
+      <div class="step"><div class="n">04</div><h4>Inspeção</h4><p>Projetos e Tempo real leem sessões locais. Prévia sob demanda. 9Router aparece no filtro e fica fora do total combinado.</p></div>
+    </div>
+  </section>
+
+  <section id="telas">
+    <h2>O que você vê</h2>
+    <p class="sub">Capturas do painel QML real, rodando com dados de demonstração na bancada. Não é mockup.</p>
+
+    <div class="feat">
+      <div>
+        <h3>Ícone na barra</h3>
+        <p>Um robô no canto direito. Some da barra se não houver uso. Aparece sozinho quando o primeiro JSON chega.</p>
+        <ul>
+          <li>Esquerdo: abre o painel</li>
+          <li>Direito: <span class="mono">omarchy-agent --pick</span></li>
+          <li>Meio: próxima assinatura</li>
+        </ul>
+        <p class="cap">Fonte: <span class="mono">Panel.qml</span> (<span class="mono">BarIconButton</span>, <span class="mono">launchAgent</span>, <span class="mono">selectProvider</span>).</p>
+      </div>
+      <div class="shot"><img src="media/bar.png" alt="Barra Omarchy com o ícone lol.agents à direita"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>All · Week</h3>
+        <p>A aba All soma os nove harnesses. Week é o padrão: sete dias, Today em destaque, tokens por modelo do período. Sem fallback para o all-time.</p>
+        <p class="cap">Captura de 15 set 2026. Soma de <span class="mono">recentDays</span> nos 9 JSON da demo: 584.072 tokens na semana. Isso é a instância isolada, não o desktop ao vivo.</p>
+      </div>
+      <div class="shot"><img src="media/all-week.png" alt="Painel All com filtro Week, tokens por dia e por modelo"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Day</h3>
+        <p>Só o calendário de hoje. O painel recusa leftover <span class="mono">today*</span> de arquivo que parou de ser reescrito. Foi assim que 585k de OpenCode de 6 set pintou como “hoje” no stock.</p>
+        <p class="cap">Fonte: README e <span class="mono">tests/test_today_fields.py</span>. Cabeçalho da captura: TOKENS TODAY.</p>
+      </div>
+      <div class="shot"><img src="media/all-day.png" alt="Filtro Day no All, só a linha Today"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Month</h3>
+        <p>Trinta dias. Dias sem mensagem somem da lista. O gráfico deixa de ser a semana chata do stock.</p>
+        <p class="cap">Fonte: <span class="mono">Panel.qml</span> <span class="mono">daysForPeriod("month")</span>, label TOKENS BY DAY (MONTH).</p>
+      </div>
+      <div class="shot"><img src="media/all-month.png" alt="Filtro Month no All, tokens por dia no mês"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Total</h3>
+        <p>All-time do coletor, ou a janela que ele realmente cobre. Não é a cota semanal. O título vira TOKENS BY MODEL (ALL TIME).</p>
+        <p class="cap">Fonte: <span class="mono">periodOptions</span> em <span class="mono">Panel.qml</span>; README: “Total is all-time, not a quota window”.</p>
+      </div>
+      <div class="shot"><img src="media/all-total.png" alt="Filtro Total no All, tokens por modelo all-time"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Grok</h3>
+        <p>Coletor extra. SuperGrok no pool semanal, tokens das sessões locais. Stock não tem essa aba.</p>
+        <p class="cap">Fonte: <span class="mono">bin/omarchy-agent-usage-grok</span>, README Collectors. Captura: SuperGrok Heavy, Weekly 18%.</p>
+      </div>
+      <div class="shot"><img src="media/grok.png" alt="Aba Grok com limite semanal SuperGrok"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Cursor</h3>
+        <p>Os mesmos meters de Settings: Cursor Models e Other Models. Sem carteira prepaid inventada a partir dos cents inclusos do Ultra.</p>
+        <p class="cap">Fonte: README “Cursor meters match Settings”; <span class="mono">tests/test_cursor_usage.py</span>. Captura: Ultra · $200/mo, 12% / 39%.</p>
+      </div>
+      <div class="shot"><img src="media/cursor.png" alt="Aba Cursor com Cursor Models e Other Models"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Fireworks prepaid</h3>
+        <p>O stock já tinha Fireworks. Aqui o saldo prepaid aparece como combustível que esvazia, não como cota que enche.</p>
+        <p class="cap">Fonte: stock README (Fireworks balance) e <span class="mono">Panel.qml</span> seção BALANCE. Captura: $18.40 remaining of $50.00 funded.</p>
+      </div>
+      <div class="shot"><img src="media/fireworks.png" alt="Aba Fireworks com saldo prepaid"></div>
+    </div>
+
+    <div class="feat">
+      <div>
+        <h3>Projetos</h3>
+        <p>Sessões locais, uma linha por repo. Sem rede. Clique abre o projeto. 9Router fica no filtro e fora do total, pra não contar o mesmo request duas vezes.</p>
+        <p class="cap">Fonte: <span class="mono">Tracking.qml</span> + <span class="mono">bin/tracking.py</span>. Captura da demo: 420,6K tokens · 3 projetos (omarchy-agents, sussurro, dailywork).</p>
+      </div>
+      <div class="shot"><img src="media/projects.png" alt="Vista Projetos com três repositórios locais"></div>
+    </div>
+
+    <div class="feat rev">
+      <div>
+        <h3>Tempo real</h3>
+        <p>Atualiza a cada 5 s. Hora, projeto, modelo, prévia da mensagem, tokens. Clique na linha puxa o detalhe. Pausar existe.</p>
+        <p class="cap">Fonte: <span class="mono">TrackingData.qml</span> <span class="mono">live: true</span>, intervalo 5000 ms. Captura: 12 registros hoje na demo.</p>
+      </div>
+      <div class="shot"><img src="media/live.png" alt="Vista Tempo real com prévias de mensagem locais"></div>
+    </div>
+  </section>
+
+  <section id="numeros">
+    <h2>Números medidos</h2>
+    <p class="sub">Contagem no checkout v1.4.1, não chute de marketing. Cada um aponta o arquivo.</p>
+    <div class="nums">
+      <div class="num"><b>9</b><span>harnesses no All (manifest defaults: claude, codex, grok, antigravity, hermes, fireworks, cursor, opencode, devin)</span></div>
+      <div class="num"><b>6</b><span>coletores extras em <span class="mono">bin/omarchy-agent-usage-*</span>: grok, antigravity, hermes, cursor, opencode, devin</span></div>
+      <div class="num"><b>4</b><span>filtros de período em <span class="mono">Panel.qml</span> <span class="mono">periodOptions</span>: Day, Week, Month, Total</span></div>
+      <div class="num"><b>1.4.1</b><span>versão em <span class="mono">manifest.json</span>. Plugin id <span class="mono">lol.agents</span>. Licença MIT, 2026 LucasOl.</span></div>
+    </div>
+    <p class="foot-note">A captura da demo somou 584.072 tokens na semana (soma de <span class="mono">recentDays.messageCount</span> nos 9 JSON em 15 set 2026). Isso descreve o vídeo, não o uso do desktop humano.</p>
+  </section>
+
+  <section id="compare">
+    <h2>Contra o stock</h2>
+    <p class="sub">Stock é o plugin <span class="mono">omarchy.agents</span> 1.0.0 que vem no Omarchy. Este checkout é o fork que roda na barra como <span class="mono">lol.agents</span>.</p>
+    <table>
+      <thead>
+        <tr><th></th><th>lol.agents 1.4.1</th><th>omarchy.agents 1.0.0</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Aba All</td><td class="y">Soma todo harness ligado</td><td class="n">Não tem. Uma aba por record.</td></tr>
+        <tr><td>Período</td><td class="y">Day / Week / Month / Total</td><td class="n">Últimos sete dias + today + modelos all-time</td></tr>
+        <tr><td>Coletores</td><td class="y">Claude, Codex, Fireworks + Grok, AGY, Hermes, Cursor, OpenCode, Devin</td><td class="n">Claude, Codex, Fireworks</td></tr>
+        <tr><td>Projetos / Tempo real</td><td class="y">Sessões locais, prévia sob demanda</td><td class="n">Não tem</td></tr>
+        <tr><td>today* velho</td><td class="y">Ignora se <span class="mono">updatedAt</span> não é hoje</td><td class="n">Pinta leftover como calendário hoje</td></tr>
+        <tr><td>Modelo no Day/Week/Month</td><td class="y">Só history do período. Sem fallback all-time</td><td class="n">Cai no <span class="mono">modelUsage</span> all-time quando falta breakdown</td></tr>
+        <tr><td>Cursor</td><td class="y">Meters iguais ao Settings</td><td class="n">Sem coletor</td></tr>
+        <tr><td>Plugin id</td><td class="y"><span class="mono">lol.agents</span></td><td class="y"><span class="mono">omarchy.agents</span></td></tr>
+      </tbody>
+    </table>
+    <p class="foot-note">
+      Fontes, todas datadas: stock <span class="mono">manifest.json</span> 1.0.0 e README em <span class="mono">/usr/share/omarchy/shell/plugins/agents/</span> (pacote Omarchy desta máquina, conferido em 15 set 2026: “Claude Code, Codex, and Fireworks”, “last seven days”); este repo <span class="mono">manifest.json</span> 1.4.1, README “What this fork adds”, <span class="mono">Panel.qml</span>, <span class="mono">bin/</span>;
+      PR upstream <a href="https://github.com/omacom/omarchy/pull/10400">omacom/omarchy#10400</a> aberto em 5 set 2026 (“Stock Omarchy’s Agents panel charts Claude, Codex, and Fireworks over the last seven days”).
+    </p>
+  </section>
+
+  <section id="instalar">
+    <h2>Instalar</h2>
+    <p class="sub">Plugin Omarchy. Não tem binário pra baixar. Troca o widget da barra; se deixar os dois, ficam dois robôs.</p>
+    <div class="two">
+      <div>
+        <h4>Plugin</h4>
+        <pre><span class="c"># clona, habilita, confirma</span>
+<span class="a">omarchy plugin add</span> https://github.com/LucasOl1337/omarchy-agents.git --enable --yes</pre>
+      </div>
+      <div>
+        <h4>Barra</h4>
+        <pre><span class="c"># em ~/.config/omarchy/shell.json</span>
+<span class="c"># right: omarchy.agents →</span> <span class="a">lol.agents</span>
+
+<span class="c"># ou:</span>
+omarchy plugin enable lol.agents \
+  --section right --after omarchy.tailscale</pre>
+      </div>
+    </div>
+    <p class="foot-note">Depois tira <span class="mono">omarchy.agents</span> do layout. Clique esquerdo abre o painel. Código e licença MIT no <a href="https://github.com/LucasOl1337/omarchy-agents">GitHub</a>. Tag atual do plugin: <a href="https://github.com/LucasOl1337/omarchy-agents/releases/tag/v1.4.1">v1.4.1</a>.</p>
+  </section>
+
+  <footer>
+    <div>Omarchy Agents · plugin <span class="mono">lol.agents</span> · MIT · LucasOl · 2026</div>
+    <div><a href="https://github.com/LucasOl1337/omarchy-agents">github.com/LucasOl1337/omarchy-agents</a></div>
+  </footer>
+</div>
+</body>
+</html>
