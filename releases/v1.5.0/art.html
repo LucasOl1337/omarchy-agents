@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    width: 960px;
+    background: linear-gradient(160deg, #160D31 0%, #1E1240 55%, #28184D 100%);
+    color: #F4F0FA;
+    font-family: "Inter", "Segoe UI", "Noto Sans", sans-serif;
+    padding: 56px 60px 48px;
+    position: relative;
+  }
+  .corner { position: absolute; width: 26px; height: 26px; border: 1.5px solid rgba(188,177,210,.45); }
+  .corner.tl { top: 20px; left: 20px; border-right: 0; border-bottom: 0; }
+  .corner.tr { top: 20px; right: 20px; border-left: 0; border-bottom: 0; }
+  .corner.bl { bottom: 20px; left: 20px; border-right: 0; border-top: 0; }
+  .corner.br { bottom: 20px; right: 20px; border-left: 0; border-top: 0; }
+
+  header { display: flex; justify-content: space-between; align-items: flex-start; }
+  .brand { display: flex; align-items: center; gap: 14px; }
+  .brand h1 { font-size: 34px; font-weight: 800; letter-spacing: .5px; }
+  .tag {
+    background: linear-gradient(90deg, #FFC61A, #AA88FA);
+    color: #160D31; font-weight: 800; font-size: 15px;
+    padding: 5px 16px; border-radius: 999px;
+  }
+  .org { text-align: right; }
+  .org .name { color: #BCB1D2; font-size: 14px; letter-spacing: 3.5px; font-weight: 700; }
+  .org .date { color: #BCB1D2; font-size: 15px; margin-top: 6px; }
+
+  .kicker {
+    margin-top: 22px; color: #FFC61A; font-size: 15px; font-weight: 800;
+    letter-spacing: 4.5px;
+  }
+  .rule { height: 1px; background: rgba(188,177,210,.28); margin: 16px 0 14px; }
+  .summary { color: #BCB1D2; font-size: 16.5px; }
+
+  section { margin-top: 34px; }
+  .sec-head { display: flex; align-items: baseline; gap: 12px; }
+  .sec-bar { width: 5px; height: 20px; border-radius: 3px; align-self: center; }
+  .sec-title { font-size: 16px; font-weight: 800; letter-spacing: 4px; }
+  .sec-count { margin-left: auto; color: #BCB1D2; font-size: 13.5px; }
+
+  ul { list-style: none; margin-top: 14px; }
+  li {
+    display: flex; align-items: baseline; padding: 9px 0;
+    font-size: 18.5px;
+  }
+  li .dot { width: 9px; height: 9px; border-radius: 50%; margin-right: 16px; flex: none; transform: translateY(-2px); }
+  li .item { color: #F4F0FA; font-weight: 600; }
+  li .benefit { color: #BCB1D2; font-weight: 400; }
+  li .area { margin-left: auto; color: #BCB1D2; font-size: 13px; letter-spacing: 1.5px; font-weight: 600; padding-left: 24px; }
+
+  .new .sec-title, .new .area { color: #FFC61A; } .new .sec-bar, .new .dot { background: #FFC61A; }
+  .fix .sec-title, .fix .area { color: #30BCEF; } .fix .sec-bar, .fix .dot { background: #30BCEF; }
+  .sys .sec-title, .sys .area { color: #AA88FA; } .sys .sec-bar, .sys .dot { background: #AA88FA; }
+
+  footer { margin-top: 40px; }
+  footer .motto { font-size: 19px; font-weight: 700; }
+  footer .motto em { color: #FFC61A; font-style: normal; }
+  footer .note { color: #BCB1D2; font-size: 14.5px; margin-top: 8px; }
+  .platform { margin-top: 30px; color: #BCB1D2; font-size: 12.5px; letter-spacing: 3.5px; font-weight: 700; }
+</style>
+</head>
+<body>
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+
+  <header>
+    <div class="brand"><h1>Omarchy Agents</h1><span class="tag">v1.5.0</span></div>
+    <div class="org"><div class="name">LUCASOL</div><div class="date">September 15, 2026</div></div>
+  </header>
+
+  <div class="kicker">RELEASE NOTES</div>
+  <div class="rule"></div>
+  <div class="summary">Tokens by the hour · same local ledger that powers Projetos and Tempo real.</div>
+
+  <section class="new">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">WHAT'S NEW</span><span class="sec-count">2 items</span></div>
+    <ul>
+      <li><span class="dot"></span><span><span class="item">Hour period</span><span class="benefit"> · tokens bucketed by hour over the last 24h, current hour highlighted</span></span><span class="area">PANEL</span></li>
+      <li><span class="dot"></span><span><span class="item">Scoped model split</span><span class="benefit"> · TOKENS BY MODEL reads the same 24h window</span></span><span class="area">PANEL</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+
+  <section class="fix">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">FIXES</span><span class="sec-count">1 item</span></div>
+    <ul>
+      <li><span class="dot"></span><span><span class="item">Today's models fill in again</span><span class="benefit"> · Day had lost the model split on stock Claude/Codex records</span></span><span class="area">PANEL</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+
+  <section class="sys">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">SYSTEMS</span><span class="sec-count">2 items</span></div>
+    <ul>
+      <li><span class="dot"></span><span><span class="item">Ledger --hours query</span><span class="benefit"> · per-event timestamps bucketed on read, no new index</span></span><span class="area">TRACKING</span></li>
+      <li><span class="dot"></span><span><span class="item">On-demand refresh</span><span class="benefit"> · Hour scans only while the panel sits on it</span></span><span class="area">TRACKING</span></li>
+    </ul>
+  </section>
+
+  <footer>
+    <div class="rule"></div>
+    <div class="motto">One icon, every harness, <em>honest numbers</em>.</div>
+    <div class="note">Full notes and audit on GitHub Releases.</div>
+    <div class="platform">LOL.AGENTS PLUGIN</div>
+  </footer>
+</body>
+</html>
