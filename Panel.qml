@@ -25,6 +25,7 @@ Panel {
   property string selectedProviderId: ""
   property string period: "week"
   readonly property var periodOptions: [
+    { key: "hour", label: "Hour" },
     { key: "day", label: "Day" },
     { key: "week", label: "Week" },
     { key: "month", label: "Month" },
@@ -62,8 +63,10 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var limits: limitWindows(provider)
-  readonly property var models: modelRows(provider, period)
-  readonly property var periodDays: daysForPeriod(provider, period)
+  readonly property var models: period === "hour" ? hourlyModelRows() : modelRows(provider, period)
+  // Hour rows come from the tracking ledger (per-event timestamps); the
+  // usage records only carry per-day buckets.
+  readonly property var periodRows: period === "hour" ? hourlyRows() : daysForPeriod(provider, period)
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
   // A prepaid account runs low the way a subscription window fills up: the
@@ -85,7 +88,10 @@ Panel {
   function refreshNow() {
     if (activeView === "projects") projectData.refresh()
     else if (activeView === "live") liveData.refresh()
-    else usage.refreshAll(true)
+    else {
+      usage.refreshAll(true)
+      if (period === "hour") hourData.refresh()
+    }
   }
 
   function launchAgent() {
@@ -239,6 +245,31 @@ Panel {
     return ""
   }
 
+  // Buckets minted from the ledger carry their own label and tooltip so the
+  // DayRow component can render them without learning about hours.
+  function hourlyRows() {
+    var snap = hourData.snapshot || ({})
+    var list = snap.hours || []
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var h = list[i] || {}
+      var start = Number(h.start || 0)
+      var when = new Date(start * 1000)
+      var tokens = Number(h.tokens || 0)
+      var calls = Number(h.calls || 0)
+      out.push({
+        date: "",
+        messageCount: tokens,
+        current: h.current === true,
+        label: Qt.formatDateTime(when, "HH:mm"),
+        tooltip: Qt.formatDateTime(when, "HH:mm") + "–" + Qt.formatDateTime(new Date((start + 3600) * 1000), "HH:mm")
+          + " · " + usage.formatTokenCount(tokens) + " tokens"
+          + " · " + calls + (calls === 1 ? " call" : " calls")
+      })
+    }
+    return out
+  }
+
   function daysForPeriod(p, kind) {
     if (!p) return []
     if (kind === "total") return []
@@ -364,8 +395,7 @@ Panel {
     return peak
   }
 
-  function modelRows(p, kind) {
-    var usageByModel = periodModelMap(p, kind || "week")
+  function modelRowsFromUsage(usageByModel, cap) {
     var rows = []
     for (var id in usageByModel) {
       var bucket = usageByModel[id] || {}
@@ -385,8 +415,21 @@ Panel {
       })
     }
     rows.sort(function(a, b) { return b.total - a.total })
-    var cap = (kind === "total" || (p && p.providerId === "all")) ? 12 : 8
     return rows.slice(0, cap)
+  }
+
+  function modelRows(p, kind) {
+    var cap = (kind === "total" || (p && p.providerId === "all")) ? 12 : 8
+    return modelRowsFromUsage(periodModelMap(p, kind || "week"), cap)
+  }
+
+  // The ledger keeps one total per model (no in/out/cache split), which is
+  // the same shape a plain numeric tokensByModel entry already has.
+  function hourlyModelRows() {
+    var map = ({})
+    var models = (hourData.snapshot && hourData.snapshot.models) || ({})
+    for (var id in models) addTokenValue(map, id, models[id])
+    return modelRowsFromUsage(map, 8)
   }
 
   function modelTooltip(row) {
@@ -406,7 +449,7 @@ Panel {
       var tokens = 0
       var rows = root.models
       for (var i = 0; i < rows.length; i++) tokens += Number(rows[i].total || 0)
-      var label = root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
+      var label = root.period === "hour" ? "last 24h" : root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
       return usage.formatTokenCount(tokens) + " tokens " + label + " · every harness"
     }
     if (provider && provider.syncEnabled && provider.syncDeviceCount > 0)
@@ -467,6 +510,15 @@ Panel {
     active: root.opened && root.activeView === "live"
     live: true
     period: "day"
+  }
+
+  // The ledger only scans while a view asks for it; tying `active` to the
+  // Hour period keeps the buckets current without a permanent 30 s scan.
+  TrackingData {
+    id: hourData
+    active: root.opened && !root.trackingExpanded && root.period === "hour"
+    hours: 24
+    provider: root.provider ? root.provider.providerId : "all"
   }
 
   Main {
@@ -546,7 +598,8 @@ Panel {
           }
           return
         }
-        if (t === "1" || t === "d" || t === "D") root.period = "day"
+        if (t === "h" || t === "H") root.period = "hour"
+        else if (t === "1" || t === "d" || t === "D") root.period = "day"
         else if (t === "2" || t === "w" || t === "W") root.period = "week"
         else if (t === "3" || t === "m" || t === "M") root.period = "month"
         else if (t === "4" || t === "t" || t === "T") root.period = "total"
@@ -826,7 +879,7 @@ Panel {
           Column {
             id: usageSection
             visible: {
-              var list = root.periodDays
+              var list = root.periodRows
               for (var i = 0; i < list.length; i++)
                 if (Number(list[i].messageCount || 0) > 0) return true
               return false
@@ -834,7 +887,7 @@ Panel {
             width: parent.width
             spacing: Style.spacing.md
 
-            readonly property var days: root.periodDays
+            readonly property var days: root.periodRows
             readonly property real peak: {
               var list = days
               var high = 0
@@ -844,7 +897,7 @@ Panel {
 
             PanelSectionHeader {
               width: parent.width
-              text: root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
+              text: root.period === "hour" ? "TOKENS BY HOUR (24H)" : root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -860,10 +913,25 @@ Panel {
                 day: modelData
                 ratio: Number(modelData.messageCount || 0) / usageSection.peak
                 // By date, not by position: the Claude stats-cache fallback can
-                // hand us a window that stops short of today.
-                today: String(modelData.date || "") === root.todayDate()
+                // hand us a window that stops short of today. Hourly buckets
+                // flag their in-progress hour instead.
+                today: modelData.current === true || String(modelData.date || "") === root.todayDate()
               }
             }
+          }
+
+          // Agents the ledger does not index (Cursor, Antigravity, Fireworks
+          // report through billing APIs) land here on Hour: an honest empty
+          // state instead of a chart that silently shows another window.
+          Text {
+            textFormat: Text.PlainText
+            visible: root.period === "hour" && !usageSection.visible
+            width: parent.width
+            text: hourData.error !== "" ? "Falha ao atualizar"
+              : (hourData.busy || !hourData.snapshot.hours ? "Lendo registros…" : "Sem registros nas últimas 24h")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
           }
 
           // ---------- Models ----------
@@ -1032,7 +1100,7 @@ Panel {
     Text {
       id: dayLabel
       textFormat: Text.PlainText
-      text: root.dayLabel(dayRow.day ? dayRow.day.date : "", dayRow.today)
+      text: dayRow.day && dayRow.day.label ? dayRow.day.label : root.dayLabel(dayRow.day ? dayRow.day.date : "", dayRow.today)
       color: dayRow.today ? root.foreground : root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.caption
@@ -1090,7 +1158,7 @@ Panel {
 
     PanelToolTip {
       visible: dayHover.containsMouse
-      text: root.dayTooltip(dayRow.day, dayRow.today)
+      text: dayRow.day && dayRow.day.tooltip ? dayRow.day.tooltip : root.dayTooltip(dayRow.day, dayRow.today)
       fontFamily: root.fontFamily
     }
   }

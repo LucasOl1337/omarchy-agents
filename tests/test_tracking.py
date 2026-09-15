@@ -59,6 +59,40 @@ class TrackingTests(unittest.TestCase):
         args.search = 'missing'
         self.assertEqual(t.snapshot(db, args, [], {})['records'], 0)
 
+    def test_hours_buckets_window_models_and_router_exclusion(self):
+        import sqlite3
+        import time
+        from datetime import datetime
+        from types import SimpleNamespace
+        db = sqlite3.connect(':memory:')
+        t.init_db(db)
+        now = time.time()
+        this_hour = datetime.fromtimestamp(now).replace(minute=0, second=0, microsecond=0).timestamp()
+        rows = [
+            ('a', 'devin', 'swe-2-max', this_hour, 100, 2),
+            ('b', 'devin', 'swe-2-max', this_hour - 3600, 50, 1),
+            ('c', 'devin', 'swe-2-medium', this_hour - 3600, 10, 1),
+            ('d', 'codex', 'gpt-5.6', this_hour - 5 * 3600, 30, 1),
+            ('e', '9router', 'skipped', this_hour, 999, 1),
+            ('f', 'devin', 'stale', this_hour - 48 * 3600, 777, 1),
+        ]
+        for rid, provider, model, ts, tokens, calls in rows:
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)',
+                       (rid, '', provider, '/p', model, ts, tokens, calls, '{}'))
+        args = SimpleNamespace(hours=24, provider='all')
+        snap = t.hourly(db, args, [], {})
+        self.assertEqual(len(snap['hours']), 24)
+        self.assertTrue(snap['hours'][-1]['current'])
+        self.assertEqual(snap['hours'][-1]['tokens'], 100)
+        self.assertEqual(snap['hours'][-2]['tokens'], 60)
+        self.assertEqual(snap['tokens'], 190)
+        self.assertEqual(snap['calls'], 5)
+        self.assertEqual(snap['models'], {'swe-2-max': 150, 'swe-2-medium': 10, 'gpt-5.6': 30})
+        args.provider = 'devin'
+        snap = t.hourly(db, args, [], {})
+        self.assertEqual(snap['tokens'], 160)
+        self.assertNotIn('gpt-5.6', snap['models'])
+
 
 class IncrementalTests(unittest.TestCase):
     def test_append_partial_record_and_rewrite(self):

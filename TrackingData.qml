@@ -7,6 +7,9 @@ Item {
   property bool active: false
   property bool paused: false
   property bool live: false
+  // >0 switches the collector to per-hour buckets over the last N hours
+  // (--hours), which the panel's Hour period reads instead of projects/rows.
+  property int hours: 0
   property string period: "week"
   property string provider: "all"
   property string project: "*"
@@ -26,8 +29,10 @@ Item {
   function resetPage() { offset = 0; refreshDelay.restart() }
   function refresh() {
     if (collector.running) { pending = true; return }
-    collector.command = ["python3", decodeURIComponent(Qt.resolvedUrl("bin/tracking.py").toString().substring(7)),
-      "--period", period, "--provider", provider, "--project", project, "--search", search, "--offset", String(offset)]
+    var script = decodeURIComponent(Qt.resolvedUrl("bin/tracking.py").toString().substring(7))
+    collector.command = hours > 0
+      ? ["python3", script, "--hours", String(hours), "--provider", provider]
+      : ["python3", script, "--period", period, "--provider", provider, "--project", project, "--search", search, "--offset", String(offset)]
     collector.running = true
   }
   property var detail: null

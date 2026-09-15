@@ -395,6 +395,40 @@ class Previews:
         return out
 
 
+def hourly(db, args, errors, counts, metrics=None):
+    window = max(1, min(24 * 7, int(args.hours or 24)))
+    now = datetime.now().astimezone()
+    current = now.replace(minute=0, second=0, microsecond=0)
+    first = current - timedelta(hours=window - 1)
+    clauses, params = ['timestamp>=?'], [first.timestamp()]
+    if args.provider == 'all':
+        clauses.append("provider != '9router'")
+    else:
+        clauses.append('provider=?')
+        params.append(args.provider)
+    where = ' AND '.join(clauses)
+    buckets = {}
+    models = {}
+    total = calls = 0
+    for ts, tokens, n_calls, model in db.execute(f'SELECT timestamp,tokens,calls,model FROM events WHERE {where}', params):
+        start = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp()
+        bucket = buckets.setdefault(start, dict(tokens=0, calls=0))
+        bucket['tokens'] += tokens
+        bucket['calls'] += n_calls
+        models[model] = models.get(model, 0) + tokens
+        total += tokens
+        calls += n_calls
+    hours = []
+    for i in range(window):
+        start = (first + timedelta(hours=i)).timestamp()
+        bucket = buckets.get(start) or dict(tokens=0, calls=0)
+        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'],
+                          current=start == current.timestamp()))
+    return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours,
+                models=models, tokens=total, calls=calls, errors=errors, sources=counts,
+                scan=metrics or {})
+
+
 def snapshot(db, args, errors, counts, metrics=None):
     since = 0
     if args.period != 'total':
@@ -442,6 +476,8 @@ def details(db, identity):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--period', choices=['day', 'week', 'month', 'total'], default='week')
+    parser.add_argument('--hours', type=int, default=0, metavar='N',
+                        help='per-hour buckets for the last N hours instead of the projects/rows snapshot')
     parser.add_argument('--provider', default='all')
     parser.add_argument('--project', default='*')
     parser.add_argument('--search', default='')
@@ -460,7 +496,8 @@ def main():
         with sqlite3.connect(STATE / 'ledger.sqlite') as db:
             init_db(db)
             errors, counts, metrics = scan(db)
-            print(json.dumps(snapshot(db, args, errors, counts, metrics), ensure_ascii=False))
+            out = hourly(db, args, errors, counts, metrics) if args.hours else snapshot(db, args, errors, counts, metrics)
+            print(json.dumps(out, ensure_ascii=False))
 
 
 if __name__ == '__main__':
