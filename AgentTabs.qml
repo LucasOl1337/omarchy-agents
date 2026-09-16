@@ -10,7 +10,11 @@ Grid {
   property color foreground: Color.foreground
   property string fontFamily: Style.font.family
   signal selected(string tab)
-  columns: expanded ? Math.min(tabs.length, Math.max(3, Math.floor(width / Style.space(82)))) : 3
+  columns: {
+    var fit = Math.max(3, Math.floor(width / Style.space(82)))
+    if (expanded) return Math.min(tabs.length, fit)
+    return Math.min(4, fit)
+  }
   columnSpacing: Style.spacing.md
   rowSpacing: Style.spacing.sm
   readonly property real cellWidth: (width - columnSpacing * (columns - 1)) / columns

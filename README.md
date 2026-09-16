@@ -1,6 +1,6 @@
 # Omarchy Agents
 
-Richer **Agents** panel for [Omarchy](https://omarchy.org/): one robot icon in the top bar, usage for every harness, All / Hour / Day / Week / Month / Total filters, and local project inspection.
+Richer **Agents** panel for [Omarchy](https://omarchy.org/): one robot icon in the top bar, usage for every harness, All / Hour / Day / Week / Month / Total filters, local project inspection, and a Radar ranking of which quota to burn next.
 
 This is the panel that runs on my Omarchy desktop. Stock `omarchy.agents` only charts Claude, Codex, and Fireworks over the last seven days. This checkout adds:
 
@@ -8,6 +8,7 @@ This is the panel that runs on my Omarchy desktop. Stock `omarchy.agents` only c
 - **Hour / Day / Week / Month / Total** token filters (Hour reads per-event buckets from the local tracking ledger, so it covers the agents with local session files)
 - **Antigravity** and **Hermes** collectors
 - **Projects** and **live** views: local sessions, compact project rows, on-demand message previews
+- **Radar** tab: ranks live quotas so you know which subscription to burn next (headroom, reset countdown, exhausted pools called out)
 - Grok / OpenCode / 9Router tracking when those session files exist on disk
 
 Plugin id: `lol.agents` (so it can sit beside stock `omarchy.agents` without colliding).
