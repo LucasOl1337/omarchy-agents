@@ -39,19 +39,25 @@ Panel {
   readonly property var provider: providers.length > 0 ? providers[providerIndex] : null
 
   property string activeView: "provider"
-  readonly property bool trackingExpanded: activeView !== "provider"
+  readonly property bool trackingExpanded: activeView === "projects" || activeView === "live"
+  readonly property bool radarActive: activeView === "radar"
   readonly property var navigationTabs: {
-    var tabs = [{ id: "all", label: "All" }, { id: "projects", label: "Projetos" }, { id: "live", label: "Tempo real" }]
+    var tabs = [
+      { id: "all", label: "All" },
+      { id: "projects", label: "Projetos" },
+      { id: "live", label: "Tempo real" },
+      { id: "radar", label: "Radar" }
+    ]
     for (var i = 0; i < providers.length; i++) {
       if (providers[i].providerId !== "all")
         tabs.push({ id: providers[i].providerId, label: providers[i].chipName || providers[i].providerName })
     }
     return tabs
   }
-  readonly property string activeTab: trackingExpanded ? activeView : (provider ? provider.providerId : "all")
+  readonly property string activeTab: (trackingExpanded || radarActive) ? activeView : (provider ? provider.providerId : "all")
 
   function selectTab(tab) {
-    if (tab === "projects" || tab === "live") activeView = tab
+    if (tab === "projects" || tab === "live" || tab === "radar") activeView = tab
     else { selectedProviderId = tab; activeView = "provider" }
     cursorActive = false
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
@@ -88,6 +94,7 @@ Panel {
   function refreshNow() {
     if (activeView === "projects") projectData.refresh()
     else if (activeView === "live") liveData.refresh()
+    else if (activeView === "radar") usage.refreshLimits()
     else {
       usage.refreshAll(true)
       if (period === "hour") hourData.refresh()
@@ -181,6 +188,171 @@ Panel {
     if (days > 0) return days + "d " + (hours % 24) + "h"
     if (hours > 0) return hours + "h " + (minutes % 60) + "m"
     return Math.max(1, minutes) + "m"
+  }
+
+  // ---------------------------------------------------------------- radar
+  //
+  // Rank each limit window (not the provider as a whole) for "use this next":
+  // prefer more headroom (1 - percent); when a pool is already quite full,
+  // a sooner reset is a small nudge so you know when it frees. Session and
+  // weekly both appear — burst vs sustained is a why-line, not a sort key.
+  // Exhausted (>= 1.0) always sink, ordered by soonest reset. Alarming
+  // (>= 0.9) sit just above them unless the reset is imminent (< 30m), in
+  // which case the row stays usable and is tagged "quase reset". Providers
+  // with no windows (and no prepaid ledger) go to Sem cota / BYO, ranked
+  // by today's tokens — they never mix into the quota list.
+
+  readonly property var radarQuotaRows: buildRadarQuotaRows(nowMs, providers)
+  readonly property var radarByoRows: buildRadarByoRows(providers)
+  readonly property string radarSummary: buildRadarSummary(radarQuotaRows)
+
+  function radarHarness(p) {
+    return p ? String(p.chipName || p.providerName || "") : ""
+  }
+
+  function radarTier(p) {
+    var tier = p ? String(p.tierLabel || "") : ""
+    if (tier === "") return ""
+    return tier.charAt(0).toUpperCase() + tier.slice(1)
+  }
+
+  function radarWindowKind(w) {
+    var title = String((w && w.title) || "").toLowerCase()
+    if (title.indexOf("month") >= 0) return "monthly"
+    if (windowIsLong(title)) return "weekly"
+    if (title.indexOf("session") >= 0) return "session"
+    return "other"
+  }
+
+  function radarWhy(harness, title, percent, resetMs, exhausted, alarming, imminent) {
+    var name = String(title || "")
+    if (name.indexOf(String(harness || "")) < 0)
+      name = String(harness || "") + (name !== "" ? " " + name : "")
+    var line = exhausted
+      ? name + " 100% · esgotado"
+      : name + " " + Math.round(Number(percent) * 100) + "% usado"
+    if (!exhausted && alarming && imminent) line += " · quase reset"
+    else if (!exhausted && alarming) line += " · alarmante"
+    if (resetMs > 0) line += " · reset em " + formatDuration(resetMs)
+    return line
+  }
+
+  function radarBand(percent, resetMs) {
+    if (percent >= 1.0) return 3
+    var imminent = resetMs > 0 && resetMs < 30 * 60 * 1000
+    if (percent >= 0.9 && !imminent) return 2
+    return 1
+  }
+
+  function radarScore(percent, resetMs, band) {
+    var headroom = Math.max(0, 1 - percent)
+    if (band === 3) return resetMs > 0 ? (1e15 - resetMs) : 0
+    var score = headroom
+    if (percent >= 0.7 && resetMs > 0)
+      score += 0.05 * (1 / (1 + resetMs / 3600000))
+    return score
+  }
+
+  function radarBalanceNote(p) {
+    var b = p ? p.balance : null
+    if (!b) return ""
+    return radarHarness(p) + " · " + formatMoney(b.remaining, b.currency) + " restantes"
+  }
+
+  function buildRadarQuotaRows(now, list) {
+    var rows = []
+    var seenBalance = ({})
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p || p.providerId === "all") continue
+      var windows = limitWindows(p)
+      var balance = p.balance || null
+      if (windows.length === 0 && balance && balance.funded > 0) {
+        var used = 1 - (balance.remaining / balance.funded)
+        windows = [limitWindow("Prepaid", used, "", "Prepaid")]
+      }
+      if (windows.length === 0) continue
+      var harness = radarHarness(p)
+      var tier = radarTier(p)
+      var balanceText = ""
+      if (balance && !seenBalance[p.providerId]) {
+        seenBalance[p.providerId] = true
+        balanceText = radarBalanceNote(p)
+      }
+      for (var w = 0; w < windows.length; w++) {
+        var win = windows[w]
+        var percent = Number(win.percent)
+        var resetMs = -1
+        if (win.resetAt !== "") {
+          var at = new Date(win.resetAt).getTime()
+          if (isFinite(at)) resetMs = at - now
+        }
+        var exhausted = percent >= 1.0
+        var imminent = resetMs > 0 && resetMs < 30 * 60 * 1000
+        var alarming = percent >= 0.9
+        var band = radarBand(percent, resetMs)
+        rows.push({
+          key: p.providerId + ":" + win.title + ":" + w,
+          providerId: p.providerId,
+          harness: harness,
+          tier: tier,
+          title: win.title,
+          kind: radarWindowKind(win),
+          percent: percent,
+          headroom: Math.max(0, 1 - percent),
+          resetMs: resetMs,
+          exhausted: exhausted,
+          alarming: alarming,
+          imminent: imminent,
+          band: band,
+          score: radarScore(percent, resetMs, band),
+          badge: exhausted ? "esgotado" : (alarming && imminent ? "quase reset" : (alarming ? "alarmante" : "")),
+          why: radarWhy(harness, win.title, percent, resetMs, exhausted, alarming, imminent),
+          balanceText: w === 0 ? balanceText : ""
+        })
+      }
+    }
+    rows.sort(function(a, b) {
+      if (a.band !== b.band) return a.band - b.band
+      if (b.score !== a.score) return b.score - a.score
+      return String(a.harness).localeCompare(String(b.harness))
+    })
+    return rows
+  }
+
+  function buildRadarByoRows(list) {
+    var rows = []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p || p.providerId === "all") continue
+      if (limitWindows(p).length > 0) continue
+      if (p.balance && p.balance.funded > 0) continue
+      var today = Number(p.todayTotalTokens || 0)
+      rows.push({
+        key: p.providerId,
+        providerId: p.providerId,
+        harness: radarHarness(p),
+        tier: radarTier(p),
+        todayTokens: today,
+        why: "sem cota" + (today > 0 ? " · " + usage.formatTokenCount(today) + " tokens hoje" : "")
+      })
+    }
+    rows.sort(function(a, b) { return b.todayTokens - a.todayTokens })
+    return rows
+  }
+
+  function buildRadarSummary(rows) {
+    var next = null
+    var exhausted = []
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i]
+      if (row.exhausted) exhausted.push(row.title.indexOf(row.harness) >= 0 ? row.title : (row.harness + " " + row.title))
+      if (row.resetMs > 0 && (!next || row.resetMs < next.resetMs)) next = row
+    }
+    var lines = []
+    if (next) lines.push("Próximo reset · " + next.harness + " " + next.title + " em " + formatDuration(next.resetMs))
+    if (exhausted.length > 0) lines.push("Esgotadas · " + exhausted.join(", "))
+    return lines.join("\n")
   }
 
   // ---------------------------------------------------------------- balance
@@ -492,6 +664,7 @@ Panel {
   implicitHeight: button.implicitHeight
 
   onProviderIndexChanged: if (panelFlick) panelFlick.contentY = 0
+  onActiveViewChanged: if (panelFlick) panelFlick.contentY = 0
   onOpenedChanged: if (opened) {
     cursorActive = false
     nowMs = Date.now()
@@ -516,7 +689,7 @@ Panel {
   // Hour period keeps the buckets current without a permanent 30 s scan.
   TrackingData {
     id: hourData
-    active: root.opened && !root.trackingExpanded && root.period === "hour"
+    active: root.opened && root.activeView === "provider" && root.period === "hour"
     hours: 24
     provider: root.provider ? root.provider.providerId : "all"
   }
@@ -577,7 +750,7 @@ Panel {
 
       onMoveRequested: function(dx, dy) {
         if (root.trackingExpanded) { expandedTracking.scrollBy(dy); return }
-        if (dx !== 0) {
+        if (dx !== 0 && !root.radarActive) {
           root.cursorActive = true
           root.selectProvider(root.providerIndex + dx)
         }
@@ -644,7 +817,7 @@ Panel {
           // ---------- Hero: provider mark · name · plan ----------
           PanelHero {
             id: hero
-            visible: !!root.provider
+            visible: !!root.provider && !root.radarActive
             width: parent.width
             title: root.provider ? root.provider.providerName : ""
             meta: root.heroMeta(root.provider)
@@ -711,6 +884,19 @@ Panel {
             width: parent.width
           }
 
+          Radar {
+            visible: root.radarActive
+            width: parent.width
+            quotaRows: root.radarQuotaRows
+            byoRows: root.radarByoRows
+            summary: root.radarSummary
+            foreground: root.foreground
+            dim: root.dim
+            urgent: root.urgent
+            track: root.track
+            fontFamily: root.fontFamily
+          }
+
           // ---------- Status ----------
           // Only an auth or endpoint problem earns the alarm surface. Cursor
           // rides a healthy status line in usageStatusText with no help text,
@@ -718,7 +904,7 @@ Panel {
           // hint in authHelpText even when signed in. A real problem sets
           // both, so the box needs both.
           BorderSurface {
-            visible: !!root.provider
+            visible: !root.radarActive && !!root.provider
               && String(root.provider.usageStatusText || "") !== ""
               && String(root.provider.authHelpText || "") !== ""
             width: parent.width
@@ -745,13 +931,13 @@ Panel {
 
           // ---------- Balance / limits ----------
           PanelSeparator {
-            visible: balanceSection.visible || limitsSection.visible
+            visible: !root.radarActive && (balanceSection.visible || limitsSection.visible)
             foreground: root.foreground
           }
 
           Column {
             id: balanceSection
-            visible: !!root.balance
+            visible: !root.radarActive && !!root.balance
             width: parent.width
             spacing: Style.space(10)
 
@@ -814,7 +1000,7 @@ Panel {
 
           Column {
             id: limitsSection
-            visible: root.limits.length > 0
+            visible: !root.radarActive && root.limits.length > 0
             width: parent.width
             spacing: Style.space(10)
 
@@ -837,13 +1023,13 @@ Panel {
 
           // ---------- Period ----------
           PanelSeparator {
-            visible: periodSwitch.visible
+            visible: !root.radarActive && periodSwitch.visible
             foreground: root.foreground
           }
 
           Row {
             id: periodSwitch
-            visible: !!root.provider
+            visible: !root.radarActive && !!root.provider
             width: parent.width
             spacing: Style.spacing.md
 
@@ -872,13 +1058,14 @@ Panel {
 
           // ---------- Usage ----------
           PanelSeparator {
-            visible: usageSection.visible
+            visible: !root.radarActive && usageSection.visible
             foreground: root.foreground
           }
 
           Column {
             id: usageSection
             visible: {
+              if (root.radarActive) return false
               var list = root.periodRows
               for (var i = 0; i < list.length; i++)
                 if (Number(list[i].messageCount || 0) > 0) return true
@@ -925,7 +1112,7 @@ Panel {
           // state instead of a chart that silently shows another window.
           Text {
             textFormat: Text.PlainText
-            visible: root.period === "hour" && !usageSection.visible
+            visible: !root.radarActive && root.period === "hour" && !usageSection.visible
             width: parent.width
             text: hourData.error !== "" ? "Falha ao atualizar"
               : (hourData.busy || !hourData.snapshot.hours ? "Lendo registros…" : "Sem registros nas últimas 24h")
@@ -936,13 +1123,13 @@ Panel {
 
           // ---------- Models ----------
           PanelSeparator {
-            visible: modelSection.visible
+            visible: !root.radarActive && modelSection.visible
             foreground: root.foreground
           }
 
           Column {
             id: modelSection
-            visible: root.models.length > 0
+            visible: !root.radarActive && root.models.length > 0
             width: parent.width
             spacing: Style.spacing.md
 
@@ -969,7 +1156,7 @@ Panel {
 
           Text {
             textFormat: Text.PlainText
-            visible: text !== ""
+            visible: !root.radarActive && text !== ""
             width: parent.width
             topPadding: Style.space(2)
             text: root.footerText()
