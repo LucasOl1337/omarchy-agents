@@ -15,7 +15,7 @@ Column {
   property color track: Style.selectedFillFor(foreground, Color.accent)
   property string fontFamily: Style.font.family
 
-  spacing: Style.space(12)
+  spacing: Style.space(10)
 
   function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)) }
 
@@ -35,7 +35,7 @@ Column {
   Column {
     visible: root.quotaRows.length > 0
     width: parent.width
-    spacing: Style.space(10)
+    spacing: Style.space(8)
 
     PanelSectionHeader {
       width: parent.width
@@ -75,7 +75,7 @@ Column {
   Column {
     visible: root.byoRows.length > 0
     width: parent.width
-    spacing: Style.space(10)
+    spacing: Style.space(6)
 
     PanelSectionHeader {
       width: parent.width
@@ -95,26 +95,27 @@ Column {
     }
   }
 
+  // Plain Column rows (no nested Item+anchors) so flickable height stays honest
+  // and meters never sit under the next title.
   component RadarRow: Column {
     id: quotaRow
     property var row: null
     property int rank: 0
+    spacing: Style.space(4)
 
     readonly property bool hot: !!(row && (row.exhausted || row.alarming))
 
-    spacing: Style.space(6)
-
-    Item {
+    Row {
       width: parent.width
-      implicitHeight: Math.max(nameLabel.implicitHeight, headLabel.implicitHeight)
+      spacing: Style.space(8)
 
       Text {
-        id: nameLabel
         textFormat: Text.PlainText
+        width: parent.width - headLabel.width - parent.spacing
         text: {
           if (!quotaRow.row) return ""
           var title = quotaRow.rank + "  " + quotaRow.row.harness
-          if (quotaRow.row.tier !== "") title += " · " + quotaRow.row.tier
+          if (quotaRow.row.title !== "") title += " · " + quotaRow.row.title
           if (quotaRow.row.badge !== "") title += " · " + quotaRow.row.badge
           return title
         }
@@ -122,10 +123,7 @@ Column {
         font.family: root.fontFamily
         font.pixelSize: Style.font.body
         elide: Text.ElideRight
-        anchors.left: parent.left
-        anchors.right: headLabel.left
-        anchors.rightMargin: Style.spacing.sm
-        anchors.verticalCenter: parent.verticalCenter
+        verticalAlignment: Text.AlignVCenter
       }
 
       Text {
@@ -135,15 +133,14 @@ Column {
         color: quotaRow.hot ? root.urgent : root.foreground
         font.family: root.fontFamily
         font.pixelSize: Style.font.caption
-        anchors.right: parent.right
-        anchors.verticalCenter: parent.verticalCenter
+        verticalAlignment: Text.AlignVCenter
       }
     }
 
     Item {
       id: meter
       width: parent.width
-      implicitHeight: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
+      height: Math.max(Style.space(4), Math.round(Style.spacing.controlHeight * 0.14))
 
       Rectangle {
         id: meterTrack
@@ -179,6 +176,7 @@ Column {
     Text {
       textFormat: Text.PlainText
       visible: !!(quotaRow.row && quotaRow.row.balanceText)
+      height: visible ? implicitHeight : 0
       width: parent.width
       text: quotaRow.row ? quotaRow.row.balanceText : ""
       color: root.dim
@@ -191,8 +189,8 @@ Column {
   component ByoRow: Item {
     id: byoRow
     property var row: null
-
-    implicitHeight: Math.max(byoName.implicitHeight, byoTag.implicitHeight) + Style.spacing.lg
+    width: parent ? parent.width : 0
+    height: Math.max(byoName.implicitHeight, byoTag.implicitHeight) + Style.space(8)
 
     Rectangle {
       anchors.fill: parent
@@ -203,6 +201,11 @@ Column {
     Text {
       id: byoName
       textFormat: Text.PlainText
+      anchors.left: parent.left
+      anchors.leftMargin: Style.space(8)
+      anchors.right: byoTag.left
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
       text: {
         if (!byoRow.row) return ""
         var title = byoRow.row.harness
@@ -213,26 +216,21 @@ Column {
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
-      anchors.left: parent.left
-      anchors.leftMargin: Style.space(8)
-      anchors.right: byoTag.left
-      anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
     }
 
     Text {
       id: byoTag
       textFormat: Text.PlainText
+      anchors.right: parent.right
+      anchors.rightMargin: Style.space(8)
+      anchors.verticalCenter: parent.verticalCenter
+      width: Math.min(implicitWidth, parent.width * 0.5)
       text: byoRow.row ? byoRow.row.why : ""
       color: root.dim
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall
       elide: Text.ElideRight
       horizontalAlignment: Text.AlignRight
-      anchors.right: parent.right
-      anchors.rightMargin: Style.space(8)
-      anchors.verticalCenter: parent.verticalCenter
-      width: Math.min(implicitWidth, parent.width * 0.55)
     }
   }
 }

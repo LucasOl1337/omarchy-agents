@@ -225,9 +225,8 @@ Panel {
   }
 
   function radarWhy(harness, title, percent, resetMs, exhausted, alarming, imminent) {
-    var name = String(title || "")
-    if (name.indexOf(String(harness || "")) < 0)
-      name = String(harness || "") + (name !== "" ? " " + name : "")
+    // Prefer the window title alone; the row header already shows the harness.
+    var name = String(title || harness || "")
     var line = exhausted
       ? name + " 100% · esgotado"
       : name + " " + Math.round(Number(percent) * 100) + "% usado"
@@ -259,6 +258,21 @@ Panel {
     return radarHarness(p) + " · " + formatMoney(b.remaining, b.currency) + " restantes"
   }
 
+  // Antigravity ships Gemini + Claude/GPT session/weekly pools. Radar only
+  // keeps Gemini Weekly — the one that matters for that subscription. Other
+  // harnesses keep their windows (Codex weekly, Claude, Cursor, Grok, …).
+  function radarWindowAllowed(providerId, win) {
+    var id = String(providerId || "").toLowerCase()
+    var title = String((win && (win.title || win.label)) || "").toLowerCase()
+    if (id === "antigravity" || id === "a01" || id.indexOf("antigravity") >= 0) {
+      if (title.indexOf("gemini") < 0) return false
+      if (title.indexOf("weekly") < 0) return false
+      if (title.indexOf("session") >= 0) return false
+      return true
+    }
+    return true
+  }
+
   function buildRadarQuotaRows(now, list) {
     var rows = []
     var seenBalance = ({})
@@ -281,6 +295,7 @@ Panel {
       }
       for (var w = 0; w < windows.length; w++) {
         var win = windows[w]
+        if (!radarWindowAllowed(p.providerId, win)) continue
         var percent = Number(win.percent)
         var resetMs = -1
         if (win.resetAt !== "") {
@@ -742,7 +757,7 @@ Panel {
     contentWidth: panel.fittedContentWidth(root.trackingExpanded ? Style.space(900) : Style.space(380))
     // Taller than the control panels on purpose: this one is a dashboard, and
     // the whole point is reading limits and history without scrolling.
-    contentHeight: root.trackingExpanded ? panel.fittedContentHeight(Style.space(560), Style.space(600)) : panel.fittedContentHeight(column.implicitHeight, Style.space(640))
+    contentHeight: root.trackingExpanded ? panel.fittedContentHeight(Style.space(560), Style.space(600)) : panel.fittedContentHeight(column.implicitHeight, root.radarActive ? Style.space(520) : Style.space(640))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -807,11 +822,16 @@ Panel {
         boundsBehavior: Flickable.StopAtBounds
         flickableDirection: Flickable.VerticalFlick
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar {
+          id: panelScrollBar
+          policy: ScrollBar.AsNeeded
+          padding: 0
+        }
 
         Column {
           id: column
-          width: panelFlick.width
+          // Inset so meters/captions never sit under the scrollbar thumb.
+          width: panelFlick.width - Style.space(14)
           spacing: Style.space(12)
 
           // ---------- Hero: provider mark · name · plan ----------
