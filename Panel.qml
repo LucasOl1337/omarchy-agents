@@ -225,7 +225,9 @@ Panel {
   }
 
   function radarWhy(harness, title, percent, resetMs, exhausted, alarming, imminent) {
-    var name = String(harness || "") + " " + String(title || "")
+    var name = String(title || "")
+    if (name.indexOf(String(harness || "")) < 0)
+      name = String(harness || "") + (name !== "" ? " " + name : "")
     var line = exhausted
       ? name + " 100% · esgotado"
       : name + " " + Math.round(Number(percent) * 100) + "% usado"

@@ -44,7 +44,9 @@ def radar_score(percent, reset_ms, band):
 
 
 def radar_why(harness, title, percent, reset_ms, exhausted, alarming, imminent):
-    name = f"{harness} {title}".strip()
+    name = str(title or "")
+    if str(harness or "") not in name:
+        name = f"{harness} {name}".strip()
     if exhausted:
         line = f"{name} 100% · esgotado"
     else:
@@ -197,6 +199,7 @@ class RadarRankTests(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["headroom"], 1.0)
         self.assertIn("0% usado", rows[0]["why"])
         self.assertIn("reset em 7d", rows[0]["why"])
+        self.assertTrue(rows[0]["why"].startswith("Codex Weekly"))
 
     def test_exhausted_sinks_and_gets_a_badge(self):
         rows = build_quota_rows(self.live_machine())
