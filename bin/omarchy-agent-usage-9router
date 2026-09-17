@@ -1,0 +1,267 @@
+#!/usr/bin/python3
+"""Print the 9Router usage record as JSON.
+
+Tokens come from ~/.9router/db/data.sqlite usageHistory (NINEROUTER_HOME
+overrides the root). Each row is one HTTP call through the local gateway.
+Dates use the row timestamp in the local timezone. Cached tokens listed
+in the tokens JSON are split out of input when they are included there.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sqlite3
+import sys
+from collections import defaultdict
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+AGENT_ID = "9router"
+AGENT_NAME = "9Router"
+
+
+def router_home() -> Path:
+    return Path(os.environ.get("NINEROUTER_HOME") or "~/.9router").expanduser()
+
+
+def db_path(home: Path | None = None) -> Path:
+    return (home or router_home()) / "db" / "data.sqlite"
+
+
+def recent_dates(today: date) -> list[str]:
+    return [(today - timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
+
+
+def empty_bucket() -> dict[str, int]:
+    return {
+        "inputTokens": 0,
+        "outputTokens": 0,
+        "cacheReadInputTokens": 0,
+        "cacheCreationInputTokens": 0,
+    }
+
+
+def add_bucket(target: dict[str, int], inp: int, out: int, cache_read: int, cache_write: int) -> None:
+    target["inputTokens"] += inp
+    target["outputTokens"] += out
+    target["cacheReadInputTokens"] += cache_read
+    target["cacheCreationInputTokens"] += cache_write
+
+
+def number(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def money(value: Any) -> float:
+    try:
+        amount = float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return amount if amount == amount and amount > 0 else 0.0
+
+
+def day_from_stamp(value: Any) -> str:
+    if value is None or value == "":
+        return ""
+    if isinstance(value, (int, float)):
+        stamp = float(value)
+        if stamp > 10_000_000_000:
+            stamp /= 1000
+        try:
+            return datetime.fromtimestamp(stamp).astimezone().date().isoformat()
+        except (OSError, OverflowError, ValueError):
+            return ""
+    text = str(value).replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return ""
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone().date().isoformat()
+
+
+def parse_tokens(raw: Any) -> dict[str, int]:
+    data = raw
+    if isinstance(raw, str) and raw:
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    prompt = number(data.get("prompt_tokens") or data.get("input_tokens"))
+    completion = number(data.get("completion_tokens") or data.get("output_tokens"))
+    cache_read = number(data.get("cached_tokens") or data.get("cache_read_input_tokens"))
+    cache_write = number(data.get("cache_creation_input_tokens") or data.get("cache_write_input_tokens"))
+    return {
+        "prompt": prompt,
+        "completion": completion,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+    }
+
+
+def empty_stats(today: date) -> dict[str, Any]:
+    week = recent_dates(today)
+    return {
+        "todayPrompts": 0,
+        "todaySessions": 0,
+        "todayTotalTokens": 0,
+        "todayTokensByModel": {},
+        "recentDays": [{"date": day, "messageCount": 0} for day in week],
+        "history": [],
+        "totalPrompts": 0,
+        "totalSessions": 0,
+        "activeDays": 0,
+        "activeDates": [],
+        "modelUsage": {},
+        "hasLocalStats": True,
+        "hasPromptStats": True,
+        "todayCost": 0.0,
+        "totalCost": 0.0,
+    }
+
+
+def scan_db(path: Path) -> dict[str, Any]:
+    models: dict[str, dict[str, int]] = defaultdict(empty_bucket)
+    daily_models: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    daily_prompts: dict[str, int] = defaultdict(int)
+    daily_cost: dict[str, float] = defaultdict(float)
+    prompts = 0
+    total_cost = 0.0
+    try:
+        conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+    except sqlite3.Error:
+        return {}
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            rows = conn.execute(
+                "SELECT timestamp, provider, model, promptTokens, completionTokens, cost, tokens FROM usageHistory"
+            )
+        except sqlite3.Error:
+            return {}
+        for row in rows:
+            day = day_from_stamp(row["timestamp"])
+            if not day:
+                continue
+            parsed = parse_tokens(row["tokens"])
+            prompt = parsed["prompt"] or number(row["promptTokens"])
+            completion = parsed["completion"] or number(row["completionTokens"])
+            cache_read = parsed["cache_read"]
+            cache_write = parsed["cache_write"]
+            inp = max(0, prompt - cache_read - cache_write)
+            total = inp + completion + cache_read + cache_write
+            if total <= 0:
+                continue
+            model = str(row["model"] or "unknown")
+            add_bucket(models[model], inp, completion, cache_read, cache_write)
+            daily_models[day][model] += total
+            daily_prompts[day] += 1
+            cost = money(row["cost"])
+            daily_cost[day] += cost
+            total_cost += cost
+            prompts += 1
+    finally:
+        conn.close()
+    return {
+        "models": models,
+        "daily_models": daily_models,
+        "daily_prompts": daily_prompts,
+        "daily_cost": daily_cost,
+        "prompts": prompts,
+        "total_cost": total_cost,
+    }
+
+
+def collect(path: Path | None = None) -> dict[str, Any]:
+    today = datetime.now().astimezone().date()
+    today_s = today.isoformat()
+    week = recent_dates(today)
+    target = path or db_path()
+    scanned = scan_db(target) if target.is_file() else {}
+    if not scanned:
+        return empty_stats(today)
+
+    history = []
+    for day in sorted(set(scanned["daily_models"]) | set(scanned["daily_prompts"])):
+        tokens_by_model = dict(scanned["daily_models"][day])
+        history.append({
+            "date": day,
+            "messageCount": sum(tokens_by_model.values()),
+            "tokensByModel": tokens_by_model,
+            "prompts": scanned["daily_prompts"].get(day, 0),
+            "sessions": 1 if scanned["daily_prompts"].get(day, 0) else 0,
+            "cost": round(scanned["daily_cost"].get(day, 0.0), 6),
+        })
+
+    today_models = dict(scanned["daily_models"].get(today_s, {}))
+    by_date = {row["date"]: row["messageCount"] for row in history}
+    recent = [{"date": day, "messageCount": by_date.get(day, 0)} for day in week]
+    active = [row["date"] for row in history if row["messageCount"] or row["prompts"]]
+    today_prompts = scanned["daily_prompts"].get(today_s, 0)
+    return {
+        "todayPrompts": today_prompts,
+        "todaySessions": 1 if today_prompts else 0,
+        "todayTotalTokens": sum(today_models.values()),
+        "todayTokensByModel": today_models,
+        "recentDays": recent,
+        "history": history,
+        "totalPrompts": scanned["prompts"],
+        "totalSessions": len(active),
+        "activeDays": len(active),
+        "activeDates": active,
+        "modelUsage": {model: dict(bucket) for model, bucket in scanned["models"].items()},
+        "hasLocalStats": True,
+        "hasPromptStats": True,
+        "todayCost": round(scanned["daily_cost"].get(today_s, 0.0), 6),
+        "totalCost": round(scanned["total_cost"], 6),
+    }
+
+
+def status_line(stats: dict[str, Any]) -> str:
+    today_cost = float(stats.get("todayCost") or 0)
+    total_cost = float(stats.get("totalCost") or 0)
+    if today_cost > 0:
+        return f"US$ {today_cost:.2f} spent today"
+    if total_cost > 0:
+        return f"US$ {total_cost:.2f} recorded"
+    return ""
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print the 9Router usage record as JSON")
+    parser.add_argument("--force", action="store_true")
+    parser.add_argument("--limits-only", action="store_true")
+    parser.parse_args()
+
+    stats = collect()
+    ready = stats["totalPrompts"] > 0 or stats["totalSessions"] > 0 or bool(stats["modelUsage"])
+    record = {
+        "schemaVersion": 1,
+        "id": AGENT_ID,
+        "name": AGENT_NAME,
+        "updatedAt": datetime.now(timezone.utc).isoformat(),
+        "ready": ready,
+        "tierLabel": "Gateway",
+        "usageStatusText": status_line(stats),
+        "authHelpText": "" if db_path().is_file() else "9Router is not running on this machine.",
+        "limits": [],
+        "scope": "device",
+    }
+    record.update(stats)
+    json.dump(record, sys.stdout, separators=(",", ":"), sort_keys=True)
+    sys.stdout.write("\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

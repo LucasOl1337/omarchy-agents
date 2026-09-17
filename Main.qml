@@ -218,7 +218,7 @@ Item {
   }
 
   function providerOrder(id) {
-    var order = { claude: 1, codex: 2, grok: 3, antigravity: 4, hermes: 5, fireworks: 6, cursor: 7, opencode: 8, devin: 9 }
+    var order = { claude: 1, codex: 2, grok: 3, antigravity: 4, hermes: 5, fireworks: 6, cursor: 7, opencode: 8, devin: 9, "9router": 10 }
     return order[id] || 50
   }
 
@@ -233,6 +233,7 @@ Item {
     if (id === "cursor") return "Cursor"
     if (id === "opencode") return "OpenCode"
     if (id === "devin") return "Devin"
+    if (id === "9router") return "9Router"
     var text = String(name || id || "")
     var space = text.indexOf(" ")
     return space > 0 ? text.substring(0, space) : text
@@ -285,7 +286,9 @@ Item {
     var hasPromptStats = false
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
-      if (!p || p.providerId === "all") continue
+      // 9Router is a gateway: Grok/Cursor already have their own tabs.
+      // DailyWork and other HTTP clients live on the 9Router tab.
+      if (!p || p.providerId === "all" || p.providerId === "9router") continue
       todayPrompts += numberValue(p.todayPrompts)
       todaySessions += numberValue(p.todaySessions)
       todayTotal += numberValue(p.todayTotalTokens)

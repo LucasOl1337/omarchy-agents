@@ -520,7 +520,7 @@ Panel {
       var list = root.providers || []
       for (var i = 0; i < list.length; i++) {
         var child = list[i]
-        if (!child || child.providerId === "all") continue
+        if (!child || child.providerId === "all" || child.providerId === "9router") continue
         var part = periodModelMap(child, kind)
         for (var id in part) addTokenValue(combined, id, part[id])
       }

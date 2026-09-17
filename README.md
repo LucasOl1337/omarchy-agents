@@ -9,7 +9,7 @@ This is the panel that runs on my Omarchy desktop. Stock `omarchy.agents` only c
 - **Antigravity** and **Hermes** collectors
 - **Projects** and **live** views: local sessions, compact project rows, on-demand message previews
 - **Radar** tab: ranks live quotas so you know which subscription to burn next (headroom, reset countdown, exhausted pools called out)
-- Grok / OpenCode / 9Router tracking when those session files exist on disk
+- Grok / OpenCode / 9Router tracking when those session files exist on disk. The **9Router** tab is the local gateway: every HTTP call in `~/.9router`, including DailyWork GPT 5.6 Sol. All stays harness-only so Grok/Cursor are not counted twice. Tempo real **Todos** includes 9Router HTTP clients and still hides 9Router rows that only proxy a harness already indexed (Grok CLI).
 
 Plugin id: `lol.agents` (so it can sit beside stock `omarchy.agents` without colliding).
 
@@ -40,6 +40,7 @@ On refresh the plugin runs stock `omarchy-agent-usage-update` (Claude, Codex, Fi
 | `grok` | SuperGrok weekly pool + local session tokens |
 | `antigravity` | Gemini / Claude / GPT quotas via `agy` |
 | `hermes` | Tokens by model from local Hermes sessions |
+| `9router` | Local 9Router gateway (`~/.9router/db/data.sqlite`) |
 
 The panel also **displays** any JSON record already in `~/.local/state/omarchy/agents/usage/` (Grok, OpenCode, …).
 
