@@ -44,22 +44,28 @@ class TrackingTests(unittest.TestCase):
             self.assertEqual(t.project(str(work / 'src'))[0], str(root))
             self.assertEqual(t.project('')[1], 'Sem projeto')
 
-    def test_filters_pagination_and_router_not_double_counted(self):
+    def test_filters_pagination_and_direct_router_in_all(self):
         import sqlite3
         from types import SimpleNamespace
         db = sqlite3.connect(':memory:')
         db.execute('CREATE TABLE events(id TEXT,source TEXT,provider TEXT,project TEXT,model TEXT,timestamp REAL,tokens INTEGER,calls INTEGER,data TEXT)')
-        for provider in ['codex', '9router']:
-            for i in range(105):
-                row = t.event(str(i), provider, 's', 'm', '/p', 1788690000, 10, 0)
-                db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)', (row['id'], '', provider, '/p', 'm', row['timestamp'], 10, 1, json.dumps(row)))
-        args = SimpleNamespace(period='total', provider='all', project='*', search='', offset=100, limit=100)
+        for i in range(50):
+            row = t.event(str(i), 'codex', 's', 'm', '/p', 1788690000, 10, 0)
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)', (row['id'], '', 'codex', '/p', 'm', row['timestamp'], 10, 1, json.dumps(row)))
+            direct = t.event('d' + str(i), '9router', 's', 'gpt-5.6-sol(medium)', '/p', 1788690000, 10, 0, kind='call', caller='9Router / codex')
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)', (direct['id'], '', '9router', '/p', direct['model'], direct['timestamp'], 10, 1, json.dumps(direct)))
+            proxy = t.event('p' + str(i), '9router', 's', 'grok-4.6', '/p', 1788690000, 10, 0, kind='proxy', caller='9Router / grok-cli')
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)', (proxy['id'], '', '9router', '/p', proxy['model'], proxy['timestamp'], 10, 1, json.dumps(proxy)))
+        args = SimpleNamespace(period='total', provider='all', project='*', search='', offset=50, limit=50)
         snap = t.snapshot(db, args, [], {})
-        self.assertEqual((snap['tokens'], snap['records'], len(snap['rows'])), (1050, 105, 5))
+        self.assertEqual((snap['tokens'], snap['records'], len(snap['rows'])), (1000, 100, 50))
         args.search = 'missing'
         self.assertEqual(t.snapshot(db, args, [], {})['records'], 0)
+        args.search = ''
+        args.provider = '9router'
+        self.assertEqual(t.snapshot(db, args, [], {})['records'], 100)
 
-    def test_hours_buckets_window_models_and_router_exclusion(self):
+    def test_hours_buckets_window_models_and_proxy_router_exclusion(self):
         import sqlite3
         import time
         from datetime import datetime
@@ -69,25 +75,26 @@ class TrackingTests(unittest.TestCase):
         now = time.time()
         this_hour = datetime.fromtimestamp(now).replace(minute=0, second=0, microsecond=0).timestamp()
         rows = [
-            ('a', 'devin', 'swe-2-max', this_hour, 100, 2),
-            ('b', 'devin', 'swe-2-max', this_hour - 3600, 50, 1),
-            ('c', 'devin', 'swe-2-medium', this_hour - 3600, 10, 1),
-            ('d', 'codex', 'gpt-5.6', this_hour - 5 * 3600, 30, 1),
-            ('e', '9router', 'skipped', this_hour, 999, 1),
-            ('f', 'devin', 'stale', this_hour - 48 * 3600, 777, 1),
+            ('a', 'devin', 'swe-2-max', this_hour, 100, 2, '{}'),
+            ('b', 'devin', 'swe-2-max', this_hour - 3600, 50, 1, '{}'),
+            ('c', 'devin', 'swe-2-medium', this_hour - 3600, 10, 1, '{}'),
+            ('d', 'codex', 'gpt-5.6', this_hour - 5 * 3600, 30, 1, '{}'),
+            ('e', '9router', 'grok-4.6', this_hour, 999, 1, json.dumps(dict(kind='proxy'))),
+            ('g', '9router', 'gpt-5.6-sol(medium)', this_hour, 40, 1, json.dumps(dict(kind='call'))),
+            ('f', 'devin', 'stale', this_hour - 48 * 3600, 777, 1, '{}'),
         ]
-        for rid, provider, model, ts, tokens, calls in rows:
+        for rid, provider, model, ts, tokens, calls, data in rows:
             db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)',
-                       (rid, '', provider, '/p', model, ts, tokens, calls, '{}'))
+                       (rid, '', provider, '/p', model, ts, tokens, calls, data))
         args = SimpleNamespace(hours=24, provider='all')
         snap = t.hourly(db, args, [], {})
         self.assertEqual(len(snap['hours']), 24)
         self.assertTrue(snap['hours'][-1]['current'])
-        self.assertEqual(snap['hours'][-1]['tokens'], 100)
+        self.assertEqual(snap['hours'][-1]['tokens'], 140)
         self.assertEqual(snap['hours'][-2]['tokens'], 60)
-        self.assertEqual(snap['tokens'], 190)
-        self.assertEqual(snap['calls'], 5)
-        self.assertEqual(snap['models'], {'swe-2-max': 150, 'swe-2-medium': 10, 'gpt-5.6': 30})
+        self.assertEqual(snap['tokens'], 230)
+        self.assertEqual(snap['calls'], 6)
+        self.assertEqual(snap['models'], {'swe-2-max': 150, 'swe-2-medium': 10, 'gpt-5.6': 30, 'gpt-5.6-sol(medium)': 40})
         args.provider = 'devin'
         snap = t.hourly(db, args, [], {})
         self.assertEqual(snap['tokens'], 160)
@@ -142,6 +149,52 @@ class IncrementalTests(unittest.TestCase):
     def test_project_requires_declared_directory(self):
         self.assertEqual(t.declared_directory('Current working directory: /home/test/Projects/example\nShell: bash'), '/home/test/Projects/example')
         self.assertEqual(t.declared_directory('Please look at /home/test/Projects/example'), '')
+
+    def test_9router_codex_is_direct_and_grok_cli_is_proxy(self):
+        import os
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            os.environ['OMARCHY_DAILYWORK_ROOT'] = str(Path(tmp) / 'empty')
+            t.dailywork_missions.cache_clear()
+            try:
+                p = Path(tmp) / 'data.sqlite'
+                db = sqlite3.connect(p)
+                db.execute('CREATE TABLE usageHistory(id INTEGER PRIMARY KEY, timestamp TEXT, provider TEXT, model TEXT, promptTokens INTEGER, completionTokens INTEGER, status TEXT, meta TEXT)')
+                db.execute('INSERT INTO usageHistory VALUES (1,?,?,?,?,?,?,?)',
+                           ('2026-09-17T10:00:00.000Z', 'codex', 'gpt-5.6-sol(medium)', 100, 5, 'ok', '{}'))
+                db.execute('INSERT INTO usageHistory VALUES (2,?,?,?,?,?,?,?)',
+                           ('2026-09-17T10:00:01.000Z', 'grok-cli', 'grok-4.6', 80, 8, 'ok', '{}'))
+                db.commit()
+                db.close()
+                rows = {row['model']: row for row in t.db_events(p, '9router')}
+                self.assertEqual(rows['gpt-5.6-sol(medium)']['kind'], 'call')
+                self.assertEqual(rows['gpt-5.6-sol(medium)']['caller'], '9Router / codex')
+                self.assertEqual(rows['grok-4.6']['kind'], 'proxy')
+                self.assertEqual(rows['grok-4.6']['caller'], '9Router / grok-cli')
+            finally:
+                os.environ.pop('OMARCHY_DAILYWORK_ROOT', None)
+                t.dailywork_missions.cache_clear()
+
+    def test_dailywork_mission_attributes_matching_sol_call(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'DailyWork'
+            mission = root / 'LucasOL/Private/candidaturas/missoes/abc'
+            mission.mkdir(parents=True)
+            (mission / 'supervisor.json').write_text(json.dumps(dict(
+                modelo='gpt-5-6-sol-medium', provider='9router',
+                iniciadoEm='2026-09-17T09:50:00.000Z', atualizadoEm='2026-09-17T10:00:10.000Z',
+            )))
+            os.environ['OMARCHY_DAILYWORK_ROOT'] = str(root)
+            t.dailywork_missions.cache_clear()
+            try:
+                cwd, caller, origin = t.attribute_direct('gpt-5.6-sol(medium)', '2026-09-17T10:00:00.000Z', '9Router / codex')
+                self.assertEqual((cwd, caller, origin), (str(root), 'DailyWork / candidaturas', 'Missão DailyWork'))
+                cwd, caller, origin = t.attribute_direct('gpt-5.6-sol(high)', '2026-09-17T10:00:00.000Z', '9Router / codex')
+                self.assertEqual((cwd, caller), ('', '9Router / codex'))
+            finally:
+                os.environ.pop('OMARCHY_DAILYWORK_ROOT', None)
+                t.dailywork_missions.cache_clear()
 
 
 if __name__ == '__main__':

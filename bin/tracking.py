@@ -79,7 +79,61 @@ def workspace_names():
 
 
 WORKSPACES = workspace_names()
-REVISION = hashlib.sha256(json.dumps(WORKSPACES, sort_keys=True).encode()).hexdigest() + ':4'
+REVISION = hashlib.sha256(json.dumps(WORKSPACES, sort_keys=True).encode()).hexdigest() + ':5'
+# 9Router backends that already have a harness collector. DailyWork and other
+# HTTP clients use the Codex connection without writing ~/.codex/sessions.
+PASSTHROUGH_BACKENDS = frozenset({'grok-cli', 'grok', 'xai', 'anthropic', 'claude'})
+
+
+def normalize_model(value):
+    return re.sub(r'[^a-z0-9]+', '-', str(value or '').lower()).strip('-')
+
+
+def dailywork_root():
+    return Path(os.environ.get('OMARCHY_DAILYWORK_ROOT', HOME / 'Projects/DailyWork'))
+
+
+@lru_cache(maxsize=1)
+def dailywork_missions():
+    missions = []
+    private = dailywork_root() / 'LucasOL' / 'Private'
+    if not private.is_dir():
+        return missions
+    for path in private.glob('*/missoes/*/supervisor.json'):
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError, TypeError):
+            continue
+        started, updated = stamp(data.get('iniciadoEm')), stamp(data.get('atualizadoEm'))
+        if not updated:
+            continue
+        frente = path.parents[2].name
+        missions.append(dict(
+            frente=frente, session=path.parent.name, model=normalize_model(data.get('modelo')),
+            cwd=str(dailywork_root()), started=started, updated=updated,
+            caller='DailyWork / ' + frente,
+        ))
+    missions.sort(key=lambda item: item['updated'], reverse=True)
+    return missions
+
+
+def attribute_direct(model, ts, fallback_caller):
+    wanted, when = normalize_model(model), stamp(ts)
+    if not when:
+        return '', fallback_caller, 'Diretório da sessão'
+    for mission in dailywork_missions():
+        if wanted and mission['model'] and wanted != mission['model']:
+            continue
+        start = mission['started'] or (mission['updated'] - 6 * 3600)
+        if start - 60 <= when <= mission['updated'] + 180:
+            return mission['cwd'], mission['caller'], 'Missão DailyWork'
+    return '', fallback_caller, 'Diretório da sessão'
+
+
+def provider_clause(provider):
+    if provider == 'all':
+        return "(provider != '9router' OR coalesce(json_extract(data,'$.kind'), 'call') != 'proxy')", []
+    return 'provider=?', [provider]
 
 
 def event(identity, provider, session, model, cwd, ts, inp, out, read=0, write=0,
@@ -238,9 +292,16 @@ def db_events(path, provider):
                 meta = json.loads(row['meta'] or '{}')
                 if not isinstance(meta, dict):
                     meta = {}
-                yield event(row['id'], provider, meta.get('sessionId', ''), row['model'], meta.get('cwd', ''),
+                backend = str(row['provider'] or '')
+                kind = 'proxy' if backend.lower() in PASSTHROUGH_BACKENDS else 'call'
+                caller = meta.get('caller') or ('9Router / ' + backend if backend else '9Router')
+                cwd = meta.get('cwd', '')
+                origin = 'Diretório da sessão'
+                if not cwd and kind == 'call':
+                    cwd, caller, origin = attribute_direct(row['model'], row['timestamp'], caller)
+                yield event(row['id'], provider, meta.get('sessionId', ''), row['model'], cwd,
                             row['timestamp'], row['promptTokens'], row['completionTokens'],
-                            caller=meta.get('caller') or '9Router / ' + str(row['provider'] or ''), status=row['status'])
+                            kind=kind, caller=caller, status=row['status'], project_origin=origin)
         elif provider == 'devin':
             seen = set()
             for row in db.execute('''SELECT m.session_id, m.created_at, m.chat_message, s.working_directory, s.model AS session_model
@@ -401,11 +462,9 @@ def hourly(db, args, errors, counts, metrics=None):
     current = now.replace(minute=0, second=0, microsecond=0)
     first = current - timedelta(hours=window - 1)
     clauses, params = ['timestamp>=?'], [first.timestamp()]
-    if args.provider == 'all':
-        clauses.append("provider != '9router'")
-    else:
-        clauses.append('provider=?')
-        params.append(args.provider)
+    extra, extra_params = provider_clause(args.provider)
+    clauses.append(extra)
+    params.extend(extra_params)
     where = ' AND '.join(clauses)
     buckets = {}
     models = {}
@@ -435,11 +494,9 @@ def snapshot(db, args, errors, counts, metrics=None):
         days = {'day': 0, 'week': 6, 'month': 29}[args.period]
         since = (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)).timestamp()
     clauses, params = ['timestamp>=?'], [since]
-    if args.provider == 'all':
-        clauses.append("provider != '9router'")
-    else:
-        clauses.append('provider=?')
-        params.append(args.provider)
+    extra, extra_params = provider_clause(args.provider)
+    clauses.append(extra)
+    params.extend(extra_params)
     if args.search:
         clauses.append('(instr(lower(data), lower(?)) > 0)')
         params.append(args.search)
