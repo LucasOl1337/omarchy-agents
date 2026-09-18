@@ -457,10 +457,16 @@ class Previews:
 
 
 def hourly(db, args, errors, counts, metrics=None):
-    window = max(1, min(24 * 7, int(args.hours or 24)))
     now = datetime.now().astimezone()
     current = now.replace(minute=0, second=0, microsecond=0)
-    first = current - timedelta(hours=window - 1)
+    if getattr(args, 'today', False):
+        # Midnight to the current hour: the panel's Hour period is "today by
+        # hour", not a rolling window that opens on yesterday's 18:00 at 17:00.
+        first = current.replace(hour=0)
+        window = current.hour + 1
+    else:
+        window = max(1, min(24 * 7, int(args.hours or 24)))
+        first = current - timedelta(hours=window - 1)
     clauses, params = ['timestamp>=?'], [first.timestamp()]
     extra, extra_params = provider_clause(args.provider)
     clauses.append(extra)
@@ -535,6 +541,8 @@ def main():
     parser.add_argument('--period', choices=['day', 'week', 'month', 'total'], default='week')
     parser.add_argument('--hours', type=int, default=0, metavar='N',
                         help='per-hour buckets for the last N hours instead of the projects/rows snapshot')
+    parser.add_argument('--today', action='store_true',
+                        help='with --hours: bucket from local midnight to the current hour instead of the last N hours')
     parser.add_argument('--provider', default='all')
     parser.add_argument('--project', default='*')
     parser.add_argument('--search', default='')

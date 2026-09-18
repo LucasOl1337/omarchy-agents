@@ -10,6 +10,9 @@ Item {
   // >0 switches the collector to per-hour buckets over the last N hours
   // (--hours), which the panel's Hour period reads instead of projects/rows.
   property int hours: 0
+  // With hours > 0, buckets from local midnight to the current hour instead
+  // of the rolling window.
+  property bool today: false
   property string period: "week"
   property string provider: "all"
   property string project: "*"
@@ -31,7 +34,7 @@ Item {
     if (collector.running) { pending = true; return }
     var script = decodeURIComponent(Qt.resolvedUrl("bin/tracking.py").toString().substring(7))
     collector.command = hours > 0
-      ? ["python3", script, "--hours", String(hours), "--provider", provider]
+      ? ["python3", script, "--hours", String(hours), "--provider", provider].concat(today ? ["--today"] : [])
       : ["python3", script, "--period", period, "--provider", provider, "--project", project, "--search", search, "--offset", String(offset)]
     collector.running = true
   }

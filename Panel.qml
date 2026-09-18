@@ -652,7 +652,7 @@ Panel {
       var tokens = 0
       var rows = root.models
       for (var i = 0; i < rows.length; i++) tokens += Number(rows[i].total || 0)
-      var label = root.period === "hour" ? "last 24h" : root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
+      var label = root.period === "hour" ? "today" : root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
       return usage.formatTokenCount(tokens) + " tokens " + label + " · every harness"
     }
     if (provider && provider.syncEnabled && provider.syncDeviceCount > 0)
@@ -722,6 +722,7 @@ Panel {
     id: hourData
     active: root.opened && root.activeView === "provider" && root.period === "hour"
     hours: 24
+    today: true
     provider: root.provider ? root.provider.providerId : "all"
   }
 
@@ -1120,7 +1121,7 @@ Panel {
 
             PanelSectionHeader {
               width: parent.width
-              text: root.period === "hour" ? "TOKENS BY HOUR (24H)" : root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
+              text: root.period === "hour" ? "TOKENS BY HOUR (TODAY)" : root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
               foreground: root.foreground
               fontFamily: root.fontFamily
             }
@@ -1151,7 +1152,7 @@ Panel {
             visible: !root.radarActive && root.period === "hour" && !usageSection.visible
             width: parent.width
             text: hourData.error !== "" ? "Falha ao atualizar"
-              : (hourData.busy || !hourData.snapshot.hours ? "Lendo registros…" : "Sem registros nas últimas 24h")
+              : (hourData.busy || !hourData.snapshot.hours ? "Lendo registros…" : "Sem registros hoje")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption

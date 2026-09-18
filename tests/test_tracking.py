@@ -100,6 +100,32 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(snap['tokens'], 160)
         self.assertNotIn('gpt-5.6', snap['models'])
 
+    def test_hours_today_starts_at_midnight_and_ends_now(self):
+        import sqlite3
+        import time
+        from datetime import datetime
+        from types import SimpleNamespace
+        db = sqlite3.connect(':memory:')
+        t.init_db(db)
+        now = datetime.fromtimestamp(time.time()).astimezone()
+        this_hour = now.replace(minute=0, second=0, microsecond=0)
+        midnight = this_hour.replace(hour=0)
+        rows = [
+            ('a', 'devin', 'swe-2-max', this_hour.timestamp(), 100, 2, '{}'),
+            ('b', 'devin', 'swe-2-max', midnight.timestamp(), 50, 1, '{}'),
+            ('c', 'devin', 'swe-2-max', midnight.timestamp() - 3600, 777, 1, '{}'),
+        ]
+        for rid, provider, model, ts, tokens, calls, data in rows:
+            db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)',
+                       (rid, '', provider, '/p', model, ts, tokens, calls, data))
+        snap = t.hourly(db, SimpleNamespace(hours=24, today=True, provider='all'), [], {})
+        self.assertEqual(len(snap['hours']), this_hour.hour + 1)
+        self.assertEqual(snap['hours'][0]['start'], midnight.timestamp())
+        self.assertEqual(snap['hours'][0]['tokens'], 50)
+        self.assertTrue(snap['hours'][-1]['current'])
+        self.assertEqual(snap['hours'][-1]['tokens'], 100)
+        self.assertEqual(snap['tokens'], 150)
+
 
 class IncrementalTests(unittest.TestCase):
     def test_append_partial_record_and_rewrite(self):
