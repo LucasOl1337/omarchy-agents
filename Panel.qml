@@ -463,12 +463,15 @@ Panel {
     prefsFile.setText(JSON.stringify({ hourlyNewestFirst: hourlyNewestFirst }, null, 2) + "\n")
   }
 
+  // One Panel lives per bar, so a toggle on one monitor reaches the others
+  // through the file watch instead of each instance keeping its own copy.
   FileView {
     id: prefsFile
     path: root.prefsPath
-    watchChanges: false
+    watchChanges: true
     atomicWrites: true
     printErrors: false
+    onFileChanged: reload()
     onLoaded: {
       try {
         var prefs = JSON.parse(text() || "{}")
@@ -477,17 +480,26 @@ Panel {
     }
   }
 
-  // Top models of one hour, biggest first, for the hover tooltip. Beyond
-  // the cap the tail folds into "+N outros" so a busy hour stays readable.
-  function hourModelLines(modelMap) {
-    var names = Object.keys(modelMap || {})
-    names.sort(function (a, b) { return Number(modelMap[b] || 0) - Number(modelMap[a] || 0) })
-    var cap = 6
-    var lines = []
+  // Top entries of one hour's split (models or projects), biggest first,
+  // for the hover tooltip. Beyond the cap the tail folds into "+N outros"
+  // so a busy hour stays readable.
+  function hourSplitLines(title, map, cap) {
+    var names = Object.keys(map || {})
+    if (names.length === 0) return ""
+    names.sort(function (a, b) { return Number(map[b] || 0) - Number(map[a] || 0) })
+    var lines = [title]
     for (var i = 0; i < names.length && i < cap; i++)
-      lines.push("  " + names[i] + " · " + usage.formatTokenCount(Number(modelMap[names[i]] || 0)))
+      lines.push("  " + names[i] + " · " + usage.formatTokenCount(Number(map[names[i]] || 0)))
     if (names.length > cap) lines.push("  +" + (names.length - cap) + " outros")
-    return lines.length ? "\n" + lines.join("\n") : ""
+    return "\n" + lines.join("\n")
+  }
+
+  function hourSplits(models, projects) {
+    return hourSplitLines("Modelos", models, 6) + hourSplitLines("Projetos", projects, 5)
+  }
+
+  function mergeSplit(into, part) {
+    for (var name in (part || {})) into[name] = Number(into[name] || 0) + Number(part[name] || 0)
   }
 
   function hourRange(start, end) {
@@ -517,12 +529,12 @@ Panel {
     var out = []
     if (fold > 0) {
       var tokens = 0, calls = 0
-      var merged = {}
+      var mergedModels = {}, mergedProjects = {}
       for (var j = 0; j < fold; j++) {
         tokens += Number((list[j] || {}).tokens || 0)
         calls += Number((list[j] || {}).calls || 0)
-        var part = (list[j] || {}).models || {}
-        for (var name in part) merged[name] = Number(merged[name] || 0) + Number(part[name] || 0)
+        mergeSplit(mergedModels, (list[j] || {}).models)
+        mergeSplit(mergedProjects, (list[j] || {}).projects)
       }
       var foldStart = Number((list[0] || {}).start || 0)
       var foldEnd = Number((list[fold - 1] || {}).start || 0) + 3600
@@ -533,7 +545,7 @@ Panel {
         current: false,
         folded: true,
         label: Qt.formatDateTime(new Date(foldStart * 1000), "HH") + "–" + Qt.formatDateTime(new Date(foldEnd * 1000), "HH"),
-        tooltip: tokens > 0 ? hourTooltip(range, tokens, calls) + hourModelLines(merged) : range + " · sem uso"
+        tooltip: tokens > 0 ? hourTooltip(range, tokens, calls) + hourSplits(mergedModels, mergedProjects) : range + " · sem uso"
       })
     }
     for (var i = fold; i < list.length; i++) {
@@ -546,7 +558,7 @@ Panel {
         messageCount: hourTokens,
         current: h.current === true,
         label: Qt.formatDateTime(new Date(start * 1000), "HH:mm"),
-        tooltip: hourTooltip(hourRange(start, start + 3600), hourTokens, hourCalls) + hourModelLines(h.models)
+        tooltip: hourTooltip(hourRange(start, start + 3600), hourTokens, hourCalls) + hourSplits(h.models, h.projects)
       })
     }
     if (root.hourlyNewestFirst) out.reverse()

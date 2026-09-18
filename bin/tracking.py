@@ -456,6 +456,10 @@ class Previews:
         return out
 
 
+def project_name(pid):
+    return WORKSPACES.get(pid, Path(pid).name) if pid else 'Sem projeto'
+
+
 def hourly(db, args, errors, counts, metrics=None):
     now = datetime.now().astimezone()
     current = now.replace(minute=0, second=0, microsecond=0)
@@ -475,21 +479,25 @@ def hourly(db, args, errors, counts, metrics=None):
     buckets = {}
     models = {}
     total = calls = 0
-    for ts, tokens, n_calls, model in db.execute(f'SELECT timestamp,tokens,calls,model FROM events WHERE {where}', params):
+    for ts, tokens, n_calls, model, pid in db.execute(f'SELECT timestamp,tokens,calls,model,project FROM events WHERE {where}', params):
         start = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp()
-        bucket = buckets.setdefault(start, dict(tokens=0, calls=0, models={}))
+        bucket = buckets.setdefault(start, dict(tokens=0, calls=0, models={}, projects={}))
         bucket['tokens'] += tokens
         bucket['calls'] += n_calls
-        # Per-bucket split so the hour tooltip can say which models burned it.
+        # Per-bucket splits so the hour tooltip can say which models and
+        # projects burned it.
         bucket['models'][model] = bucket['models'].get(model, 0) + tokens
+        name = project_name(pid)
+        bucket['projects'][name] = bucket['projects'].get(name, 0) + tokens
         models[model] = models.get(model, 0) + tokens
         total += tokens
         calls += n_calls
     hours = []
     for i in range(window):
         start = (first + timedelta(hours=i)).timestamp()
-        bucket = buckets.get(start) or dict(tokens=0, calls=0, models={})
-        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'], models=bucket['models'],
+        bucket = buckets.get(start) or dict(tokens=0, calls=0, models={}, projects={})
+        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'],
+                          models=bucket['models'], projects=bucket['projects'],
                           current=start == current.timestamp()))
     return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours,
                 models=models, tokens=total, calls=calls, errors=errors, sources=counts,
@@ -511,7 +519,7 @@ def snapshot(db, args, errors, counts, metrics=None):
     where = ' AND '.join(clauses)
     projects = []
     for pid, total, calls, last in db.execute(f'SELECT project,sum(tokens),sum(calls),max(timestamp) FROM events WHERE {where} GROUP BY project ORDER BY sum(tokens) DESC', params):
-        projects.append(dict(id=pid, name=WORKSPACES.get(pid, Path(pid).name) if pid else 'Sem projeto', tokens=total, calls=calls, lastSeen=last))
+        projects.append(dict(id=pid, name=project_name(pid), tokens=total, calls=calls, lastSeen=last))
     if args.project != '*':
         where += ' AND project=?'
         params.append(args.project)

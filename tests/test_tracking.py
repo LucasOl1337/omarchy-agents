@@ -95,6 +95,8 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(snap['hours'][-2]['tokens'], 60)
         self.assertEqual(snap['hours'][-2]['models'], {'swe-2-max': 50, 'swe-2-medium': 10})
         self.assertEqual(snap['hours'][0]['models'], {})
+        self.assertEqual(snap['hours'][-1]['projects'], {'p': 140})
+        self.assertEqual(snap['hours'][0]['projects'], {})
         self.assertEqual(snap['tokens'], 230)
         self.assertEqual(snap['calls'], 6)
         self.assertEqual(snap['models'], {'swe-2-max': 150, 'swe-2-medium': 10, 'gpt-5.6': 30, 'gpt-5.6-sol(medium)': 40})
