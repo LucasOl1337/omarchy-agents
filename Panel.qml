@@ -448,26 +448,65 @@ Panel {
     return ""
   }
 
+  // The current hour has to stay in view without scrolling, so the list
+  // keeps at most this many individual hours; the earlier part of the day
+  // folds into one summed row.
+  readonly property int hourlyRowCap: 12
+
+  function hourRange(start, end) {
+    return Qt.formatDateTime(new Date(start * 1000), "HH:mm") + "–" + Qt.formatDateTime(new Date(end * 1000), "HH:mm")
+  }
+
+  function hourTooltip(range, tokens, calls) {
+    return range + " · " + usage.formatTokenCount(tokens) + " tokens · " + calls + (calls === 1 ? " call" : " calls")
+  }
+
   // Buckets minted from the ledger carry their own label and tooltip so the
   // DayRow component can render them without learning about hours.
+  //
+  // Chronological order is kept, but the start of the day folds into a
+  // single row: idle hours at the top (00:00–08:59 on a normal morning)
+  // carry nothing worth a row each, and past hourlyRowCap the oldest hours
+  // with usage fold too. Day totals stay intact either way.
   function hourlyRows() {
     var snap = hourData.snapshot || ({})
     var list = snap.hours || []
+    var idle = 0
+    while (idle < list.length && Number((list[idle] || {}).tokens || 0) <= 0) idle++
+    var fold = Math.max(idle, list.length - hourlyRowCap)
+    // Never fold the current hour; a fold of one row saves nothing.
+    fold = Math.min(fold, list.length - 1)
+    if (fold < 2) fold = 0
     var out = []
-    for (var i = 0; i < list.length; i++) {
-      var h = list[i] || {}
-      var start = Number(h.start || 0)
-      var when = new Date(start * 1000)
-      var tokens = Number(h.tokens || 0)
-      var calls = Number(h.calls || 0)
+    if (fold > 0) {
+      var tokens = 0, calls = 0
+      for (var j = 0; j < fold; j++) {
+        tokens += Number((list[j] || {}).tokens || 0)
+        calls += Number((list[j] || {}).calls || 0)
+      }
+      var foldStart = Number((list[0] || {}).start || 0)
+      var foldEnd = Number((list[fold - 1] || {}).start || 0) + 3600
+      var range = hourRange(foldStart, foldEnd)
       out.push({
         date: "",
         messageCount: tokens,
+        current: false,
+        folded: true,
+        label: Qt.formatDateTime(new Date(foldStart * 1000), "HH") + "–" + Qt.formatDateTime(new Date(foldEnd * 1000), "HH"),
+        tooltip: tokens > 0 ? hourTooltip(range, tokens, calls) : range + " · sem uso"
+      })
+    }
+    for (var i = fold; i < list.length; i++) {
+      var h = list[i] || {}
+      var start = Number(h.start || 0)
+      var hourTokens = Number(h.tokens || 0)
+      var hourCalls = Number(h.calls || 0)
+      out.push({
+        date: "",
+        messageCount: hourTokens,
         current: h.current === true,
-        label: Qt.formatDateTime(when, "HH:mm"),
-        tooltip: Qt.formatDateTime(when, "HH:mm") + "–" + Qt.formatDateTime(new Date((start + 3600) * 1000), "HH:mm")
-          + " · " + usage.formatTokenCount(tokens) + " tokens"
-          + " · " + calls + (calls === 1 ? " call" : " calls")
+        label: Qt.formatDateTime(new Date(start * 1000), "HH:mm"),
+        tooltip: hourTooltip(hourRange(start, start + 3600), hourTokens, hourCalls)
       })
     }
     return out
@@ -1115,7 +1154,12 @@ Panel {
             readonly property real peak: {
               var list = days
               var high = 0
-              for (var i = 0; i < list.length; i++) high = Math.max(high, Number(list[i].messageCount || 0))
+              for (var i = 0; i < list.length; i++) {
+                // A folded morning sums several hours; letting it set the
+                // peak would squash every real hour bar.
+                if (list[i].folded === true) continue
+                high = Math.max(high, Number(list[i].messageCount || 0))
+              }
               return Math.max(1, high)
             }
 
