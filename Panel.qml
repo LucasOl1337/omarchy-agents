@@ -192,15 +192,20 @@ Panel {
 
   // ---------------------------------------------------------------- radar
   //
-  // Rank each limit window (not the provider as a whole) for "use this next":
-  // prefer more headroom (1 - percent); when a pool is already quite full,
-  // a sooner reset is a small nudge so you know when it frees. Session and
-  // weekly both appear — burst vs sustained is a why-line, not a sort key.
+  // The radar is the five paid subscriptions and nothing else: Claude,
+  // Codex, Grok, Cursor and Antigravity, one weekly pool each. Session
+  // windows are burst headroom, not the quota that decides the week, so
+  // they stay out; model-scoped extra pools (Fable Weekly, Claude / GPT
+  // Weekly) stay out too. Cursor's two model pools are its billing-cycle
+  // quota — it has no session window, so they are its "weekly".
+  //
+  // Rows rank by use-now headroom (1 - percent); when a pool is already
+  // quite full, a sooner reset is a small nudge so you know when it frees.
   // Exhausted (>= 1.0) always sink, ordered by soonest reset. Alarming
   // (>= 0.9) sit just above them unless the reset is imminent (< 30m), in
-  // which case the row stays usable and is tagged "quase reset". Providers
-  // with no windows (and no prepaid ledger) go to Sem cota / BYO, ranked
-  // by today's tokens — they never mix into the quota list.
+  // which case the row stays usable and is tagged "quase reset". One of
+  // the five with no windows (and no prepaid ledger) goes to Sem cota /
+  // BYO, ranked by today's tokens — they never mix into the quota list.
 
   readonly property var radarQuotaRows: buildRadarQuotaRows(nowMs, providers)
   readonly property var radarByoRows: buildRadarByoRows(providers)
@@ -258,19 +263,28 @@ Panel {
     return radarHarness(p) + " · " + formatMoney(b.remaining, b.currency) + " restantes"
   }
 
-  // Antigravity ships Gemini + Claude/GPT session/weekly pools. Radar only
-  // keeps Gemini Weekly — the one that matters for that subscription. Other
-  // harnesses keep their windows (Codex weekly, Claude, Cursor, Grok, …).
+  // Only the five subscriptions the radar is for. Anything else — local
+  // harnesses, BYO gateways, sync-only records — stays out of both lists.
+  function radarProviderAllowed(providerId) {
+    var id = String(providerId || "").toLowerCase()
+    return id === "claude" || id === "codex" || id === "grok" || id === "cursor"
+      || id === "agy" || id === "a01" || id.indexOf("antigravity") >= 0
+  }
+
+  // One weekly pool per provider. "Weekly" is the normalized title every
+  // generic 7-day window lands on; a titled pool ("Fable Weekly") is an
+  // extra the list does not want. Sessions never pass. Antigravity ships
+  // Gemini + Claude/GPT session/weekly pools; only Gemini Weekly matters
+  // for that subscription. Cursor's model pools are its billing-cycle
+  // quota, so both stay.
   function radarWindowAllowed(providerId, win) {
     var id = String(providerId || "").toLowerCase()
     var title = String((win && (win.title || win.label)) || "").toLowerCase()
-    if (id === "antigravity" || id === "a01" || id.indexOf("antigravity") >= 0) {
-      if (title.indexOf("gemini") < 0) return false
-      if (title.indexOf("weekly") < 0) return false
-      if (title.indexOf("session") >= 0) return false
-      return true
-    }
-    return true
+    if (id === "antigravity" || id === "agy" || id === "a01" || id.indexOf("antigravity") >= 0)
+      return title.indexOf("gemini") >= 0 && title.indexOf("weekly") >= 0 && title.indexOf("session") < 0
+    if (title.indexOf("session") >= 0) return false
+    if (id === "cursor") return true
+    return title === "weekly"
   }
 
   function buildRadarQuotaRows(now, list) {
@@ -279,6 +293,7 @@ Panel {
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
       if (!p || p.providerId === "all") continue
+      if (!radarProviderAllowed(p.providerId)) continue
       var windows = limitWindows(p)
       var balance = p.balance || null
       if (windows.length === 0 && balance && balance.funded > 0) {
@@ -340,6 +355,7 @@ Panel {
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
       if (!p || p.providerId === "all") continue
+      if (!radarProviderAllowed(p.providerId)) continue
       if (limitWindows(p).length > 0) continue
       if (p.balance && p.balance.funded > 0) continue
       var today = Number(p.todayTotalTokens || 0)

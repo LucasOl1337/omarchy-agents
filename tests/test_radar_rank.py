@@ -1,7 +1,9 @@
 """Contract for Panel.qml Radar ranking.
 
 Keep this in sync with the QML: buildRadarQuotaRows / buildRadarByoRows.
-Quota windows sort by use-now headroom; exhausted pools sink; providers
+The radar only ranks the five paid subscriptions — Claude, Codex, Grok,
+Cursor, Antigravity — one weekly pool each. Sessions, extra model-scoped
+pools, and every other harness stay out; exhausted pools sink; providers
 with no limits never mix into the quota list.
 """
 import unittest
@@ -11,6 +13,23 @@ ALARMING = 0.9
 EXHAUSTED = 1.0
 IMMINENT_MS = 30 * 60 * 1000
 NUDGE_FROM = 0.7
+
+
+def radar_provider_allowed(provider_id):
+    pid = str(provider_id or "").lower()
+    return pid in ("claude", "codex", "grok", "cursor", "agy", "a01") or "antigravity" in pid
+
+
+def radar_window_allowed(provider_id, title):
+    pid = str(provider_id or "").lower()
+    text = str(title or "").lower()
+    if pid in ("antigravity", "agy", "a01") or "antigravity" in pid:
+        return "gemini" in text and "weekly" in text and "session" not in text
+    if "session" in text:
+        return False
+    if pid == "cursor":
+        return True
+    return text == "weekly"
 
 
 def window_kind(title):
@@ -79,6 +98,8 @@ def build_quota_rows(providers, now_ms=0):
     for p in providers:
         if not p or p.get("providerId") == "all":
             continue
+        if not radar_provider_allowed(p.get("providerId")):
+            continue
         windows = list(p.get("limits") or [])
         balance = p.get("balance")
         if not windows and balance and float(balance.get("funded") or 0) > 0:
@@ -99,6 +120,8 @@ def build_quota_rows(providers, now_ms=0):
             balance_text = f"{harness} · {prefix}{remaining:.2f} restantes"
             balance_shown.add(p.get("providerId"))
         for i, win in enumerate(windows):
+            if not radar_window_allowed(p.get("providerId"), win.get("title")):
+                continue
             percent = float(win["percent"])
             reset_ms = float(win.get("resetMs", -1))
             exhausted = percent >= EXHAUSTED
@@ -134,6 +157,8 @@ def build_byo_rows(providers):
     rows = []
     for p in providers:
         if not p or p.get("providerId") == "all":
+            continue
+        if not radar_provider_allowed(p.get("providerId")):
             continue
         windows = p.get("limits") or []
         balance = p.get("balance")
@@ -176,9 +201,10 @@ class RadarRankTests(unittest.TestCase):
                 {"title": "Other Models", "percent": 0.83, "resetMs": 10 * day},
             ]},
             {"providerId": "grok", "chipName": "Grok", "limits": [
-                {"title": "Weekly", "percent": 0.76, "resetMs": 2 * day},
+                {"title": "Weekly", "percent": 0.95, "resetMs": 2 * day},
             ]},
             {"providerId": "codex", "chipName": "Codex", "limits": [
+                {"title": "Session", "percent": 0.02, "resetMs": 3 * hour},
                 {"title": "Weekly", "percent": 0.0, "resetMs": 7 * day},
             ]},
             {"providerId": "hermes", "chipName": "Hermes", "tierLabel": "Local",
@@ -201,85 +227,93 @@ class RadarRankTests(unittest.TestCase):
         self.assertIn("reset em 7d", rows[0]["why"])
         self.assertTrue(rows[0]["why"].startswith("Codex Weekly"))
 
-    def test_exhausted_sinks_and_gets_a_badge(self):
-        rows = build_quota_rows(self.live_machine())
+    def test_only_the_five_weeklies_surface(self):
+        keys = self.keys(build_quota_rows(self.live_machine()))
+        self.assertEqual(keys, [
+            "Codex Weekly",
+            "Cursor Cursor Models",
+            "AGY Gemini Weekly",
+            "Claude Weekly",
+            "Cursor Other Models",
+            "Grok Weekly",
+        ])
+        joined = " ".join(keys)
+        for dropped in ("Session", "Fable", "Claude / GPT", "Hermes", "OpenCode", "Devin"):
+            self.assertNotIn(dropped, joined)
+
+    def test_exhausted_weekly_sinks_and_gets_a_badge(self):
+        rows = build_quota_rows([{
+            "providerId": "claude", "chipName": "Claude",
+            "limits": [{"title": "Weekly", "percent": 1.0, "resetMs": 3 * 24 * 3_600_000}],
+        }, {
+            "providerId": "codex", "chipName": "Codex",
+            "limits": [{"title": "Weekly", "percent": 0.1, "resetMs": 6 * 24 * 3_600_000}],
+        }])
         last = rows[-1]
-        self.assertEqual(last["title"], "Fable Weekly")
+        self.assertEqual(last["harness"], "Claude")
         self.assertTrue(last["exhausted"])
         self.assertEqual(last["badge"], "esgotado")
         self.assertIn("esgotado", last["why"])
-        self.assertEqual(self.keys(rows).count("Claude Fable Weekly"), 1)
 
-    def test_alarming_without_imminent_reset_is_near_bottom(self):
+    def test_alarming_weekly_sits_near_bottom(self):
         rows = build_quota_rows(self.live_machine())
-        keys = self.keys(rows)
-        self.assertLess(keys.index("Codex Weekly"), keys.index("AGY Gemini Session"))
-        self.assertLess(keys.index("AGY Gemini Session"), keys.index("Claude Fable Weekly"))
-        gemini = next(r for r in rows if r["title"] == "Gemini Session")
-        self.assertEqual(gemini["band"], 2)
-        self.assertEqual(gemini["badge"], "alarmante")
+        last = rows[-1]
+        self.assertEqual(last["harness"], "Grok")
+        self.assertEqual(last["title"], "Weekly")
+        self.assertEqual(last["band"], 2)
+        self.assertEqual(last["badge"], "alarmante")
 
     def test_alarming_with_imminent_reset_stays_usable(self):
         providers = [{
-            "providerId": "agy", "chipName": "AGY",
-            "limits": [
-                {"title": "Gemini Session", "percent": 0.91, "resetMs": 20 * 60 * 1000},
-                {"title": "Gemini Weekly", "percent": 0.15, "resetMs": 6 * 24 * 3_600_000},
-            ],
+            "providerId": "codex", "chipName": "Codex",
+            "limits": [{"title": "Weekly", "percent": 0.91, "resetMs": 20 * 60 * 1000}],
         }]
         rows = build_quota_rows(providers)
-        session = next(r for r in rows if r["title"] == "Gemini Session")
-        self.assertEqual(session["band"], 1)
-        self.assertEqual(session["badge"], "quase reset")
-        self.assertIn("quase reset", session["why"])
-
-    def test_session_and_weekly_both_surface_ranked_by_headroom(self):
-        keys = self.keys(build_quota_rows(self.live_machine()))
-        self.assertLess(keys.index("Claude Session"), keys.index("Claude Weekly"))
-        self.assertLess(keys.index("AGY Gemini Weekly"), keys.index("AGY Gemini Session"))
-        self.assertIn("Claude Session", keys)
-        self.assertIn("Claude Weekly", keys)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["band"], 1)
+        self.assertEqual(rows[0]["badge"], "quase reset")
+        self.assertIn("quase reset", rows[0]["why"])
 
     def test_all_aggregate_is_skipped(self):
         keys = self.keys(build_quota_rows(self.live_machine()))
         self.assertNotIn("Ignored", " ".join(keys))
 
-    def test_byo_is_separate_and_ranked_by_today_tokens(self):
-        byo = build_byo_rows(self.live_machine())
-        self.assertEqual([r["harness"] for r in byo], ["Hermes", "OpenCode", "Devin"])
-        self.assertTrue(all("sem cota" in r["why"] for r in byo))
-        quota_ids = {r["providerId"] for r in build_quota_rows(self.live_machine())}
-        self.assertFalse(quota_ids & {"hermes", "opencode", "devin"})
+    def test_byo_lists_only_the_five(self):
+        self.assertEqual(build_byo_rows(self.live_machine()), [])
+        providers = [
+            {"providerId": "codex", "chipName": "Codex", "limits": [], "todayTotalTokens": 8000},
+            {"providerId": "hermes", "chipName": "Hermes", "limits": [], "todayTotalTokens": 9000},
+        ]
+        byo = build_byo_rows(providers)
+        self.assertEqual([r["harness"] for r in byo], ["Codex"])
+        self.assertIn("sem cota", byo[0]["why"])
 
-    def test_prepaid_without_limits_is_a_quota_row(self):
-        rows = build_quota_rows([{
-            "providerId": "fireworks",
-            "chipName": "Fireworks",
+    def test_prepaid_only_survives_on_the_five(self):
+        prepaid = {
             "limits": [],
             "balance": {"remaining": 4.2, "funded": 20.0, "currency": "USD"},
-        }])
+        }
+        fireworks = [{"providerId": "fireworks", "chipName": "Fireworks", **prepaid}]
+        self.assertEqual(build_quota_rows(fireworks), [])
+        self.assertEqual(build_byo_rows(fireworks), [])
+        cursor = [{"providerId": "cursor", "chipName": "Cursor", **prepaid}]
+        rows = build_quota_rows(cursor)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["title"], "Prepaid")
         self.assertAlmostEqual(rows[0]["percent"], 0.79)
         self.assertIn("$4.20 restantes", rows[0]["balanceText"])
-        self.assertEqual(build_byo_rows([{
-            "providerId": "fireworks",
-            "chipName": "Fireworks",
-            "limits": [],
-            "balance": {"remaining": 4.2, "funded": 20.0, "currency": "USD"},
-        }]), [])
 
     def test_sooner_reset_nudge_does_not_outrank_real_headroom(self):
         rows = build_quota_rows([
-            {"providerId": "a", "chipName": "A", "limits": [
+            {"providerId": "grok", "chipName": "Grok", "limits": [
                 {"title": "Weekly", "percent": 0.80, "resetMs": 10 * 60 * 1000},
             ]},
-            {"providerId": "b", "chipName": "B", "limits": [
+            {"providerId": "codex", "chipName": "Codex", "limits": [
                 {"title": "Weekly", "percent": 0.10, "resetMs": 7 * 24 * 3_600_000},
             ]},
         ])
-        self.assertEqual(rows[0]["harness"], "B")
-        self.assertEqual(rows[1]["harness"], "A")
+        self.assertEqual(rows[0]["harness"], "Codex")
+        self.assertEqual(rows[1]["harness"], "Grok")
 
 
 if __name__ == "__main__":
