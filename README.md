@@ -41,6 +41,7 @@ On refresh the plugin runs stock `omarchy-agent-usage-update` (Claude, Codex, Fi
 | `antigravity` | Gemini / Claude / GPT quotas via `agy` |
 | `hermes` | Tokens by model from local Hermes sessions |
 | `9router` | Local 9Router gateway (`~/.9router/db/data.sqlite`) |
+| `codex` | Overrides stock: packaged `-a untrusted` fails on codex 0.154 |
 
 The panel also **displays** any JSON record already in `~/.local/state/omarchy/agents/usage/` (Grok, OpenCode, …).
 

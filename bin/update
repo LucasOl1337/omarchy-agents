@@ -40,7 +40,7 @@ else
   stock=()
   for agent in "${only[@]}"; do
     case "$agent" in
-    antigravity | grok | hermes | cursor | devin | opencode | 9router | all) ;;
+    antigravity | grok | hermes | cursor | devin | opencode | 9router | codex | all) ;;
     *) stock+=("$agent") ;;
     esac
   done
@@ -62,7 +62,10 @@ collect() {
   mv "$tmp" "$USAGE_DIR/$agent.json"
 }
 
-for agent in grok antigravity hermes cursor devin opencode 9router; do
+# codex is plugin-side too: the packaged stock collector still passes
+# `-a untrusted`, which codex 0.154 rejects, so stock writes an empty
+# limits record and the copy in bin/ rewrites it right after.
+for agent in grok antigravity hermes cursor devin opencode 9router codex; do
   wanted "$agent" || continue
   collector="$DIR/omarchy-agent-usage-$agent"
   [[ -x $collector ]] || continue
