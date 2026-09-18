@@ -477,17 +477,19 @@ def hourly(db, args, errors, counts, metrics=None):
     total = calls = 0
     for ts, tokens, n_calls, model in db.execute(f'SELECT timestamp,tokens,calls,model FROM events WHERE {where}', params):
         start = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp()
-        bucket = buckets.setdefault(start, dict(tokens=0, calls=0))
+        bucket = buckets.setdefault(start, dict(tokens=0, calls=0, models={}))
         bucket['tokens'] += tokens
         bucket['calls'] += n_calls
+        # Per-bucket split so the hour tooltip can say which models burned it.
+        bucket['models'][model] = bucket['models'].get(model, 0) + tokens
         models[model] = models.get(model, 0) + tokens
         total += tokens
         calls += n_calls
     hours = []
     for i in range(window):
         start = (first + timedelta(hours=i)).timestamp()
-        bucket = buckets.get(start) or dict(tokens=0, calls=0)
-        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'],
+        bucket = buckets.get(start) or dict(tokens=0, calls=0, models={})
+        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'], models=bucket['models'],
                           current=start == current.timestamp()))
     return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours,
                 models=models, tokens=total, calls=calls, errors=errors, sources=counts,

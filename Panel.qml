@@ -453,6 +453,43 @@ Panel {
   // folds into one summed row.
   readonly property int hourlyRowCap: 12
 
+  // Newest hour on top is a preference, so it survives panel and shell
+  // restarts through a small prefs file next to the usage state.
+  property bool hourlyNewestFirst: false
+  readonly property string prefsPath: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") || "") + "/.local/state") + "/omarchy/agents/panel-prefs.json"
+
+  function toggleHourlyOrder() {
+    hourlyNewestFirst = !hourlyNewestFirst
+    prefsFile.setText(JSON.stringify({ hourlyNewestFirst: hourlyNewestFirst }, null, 2) + "\n")
+  }
+
+  FileView {
+    id: prefsFile
+    path: root.prefsPath
+    watchChanges: false
+    atomicWrites: true
+    printErrors: false
+    onLoaded: {
+      try {
+        var prefs = JSON.parse(text() || "{}")
+        root.hourlyNewestFirst = prefs.hourlyNewestFirst === true
+      } catch (e) {}
+    }
+  }
+
+  // Top models of one hour, biggest first, for the hover tooltip. Beyond
+  // the cap the tail folds into "+N outros" so a busy hour stays readable.
+  function hourModelLines(modelMap) {
+    var names = Object.keys(modelMap || {})
+    names.sort(function (a, b) { return Number(modelMap[b] || 0) - Number(modelMap[a] || 0) })
+    var cap = 6
+    var lines = []
+    for (var i = 0; i < names.length && i < cap; i++)
+      lines.push("  " + names[i] + " · " + usage.formatTokenCount(Number(modelMap[names[i]] || 0)))
+    if (names.length > cap) lines.push("  +" + (names.length - cap) + " outros")
+    return lines.length ? "\n" + lines.join("\n") : ""
+  }
+
   function hourRange(start, end) {
     return Qt.formatDateTime(new Date(start * 1000), "HH:mm") + "–" + Qt.formatDateTime(new Date(end * 1000), "HH:mm")
   }
@@ -480,9 +517,12 @@ Panel {
     var out = []
     if (fold > 0) {
       var tokens = 0, calls = 0
+      var merged = {}
       for (var j = 0; j < fold; j++) {
         tokens += Number((list[j] || {}).tokens || 0)
         calls += Number((list[j] || {}).calls || 0)
+        var part = (list[j] || {}).models || {}
+        for (var name in part) merged[name] = Number(merged[name] || 0) + Number(part[name] || 0)
       }
       var foldStart = Number((list[0] || {}).start || 0)
       var foldEnd = Number((list[fold - 1] || {}).start || 0) + 3600
@@ -493,7 +533,7 @@ Panel {
         current: false,
         folded: true,
         label: Qt.formatDateTime(new Date(foldStart * 1000), "HH") + "–" + Qt.formatDateTime(new Date(foldEnd * 1000), "HH"),
-        tooltip: tokens > 0 ? hourTooltip(range, tokens, calls) : range + " · sem uso"
+        tooltip: tokens > 0 ? hourTooltip(range, tokens, calls) + hourModelLines(merged) : range + " · sem uso"
       })
     }
     for (var i = fold; i < list.length; i++) {
@@ -506,9 +546,10 @@ Panel {
         messageCount: hourTokens,
         current: h.current === true,
         label: Qt.formatDateTime(new Date(start * 1000), "HH:mm"),
-        tooltip: hourTooltip(hourRange(start, start + 3600), hourTokens, hourCalls)
+        tooltip: hourTooltip(hourRange(start, start + 3600), hourTokens, hourCalls) + hourModelLines(h.models)
       })
     }
+    if (root.hourlyNewestFirst) out.reverse()
     return out
   }
 
@@ -1163,11 +1204,34 @@ Panel {
               return Math.max(1, high)
             }
 
-            PanelSectionHeader {
+            Item {
               width: parent.width
-              text: root.period === "hour" ? "TOKENS BY HOUR (TODAY)" : root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
-              foreground: root.foreground
-              fontFamily: root.fontFamily
+              implicitHeight: Math.max(usageHeader.implicitHeight, hourOrderButton.visible ? hourOrderButton.implicitHeight : 0)
+
+              PanelSectionHeader {
+                id: usageHeader
+                anchors.left: parent.left
+                anchors.right: hourOrderButton.visible ? hourOrderButton.left : parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.period === "hour" ? "TOKENS BY HOUR (TODAY)" : root.period === "day" ? "TOKENS TODAY" : root.period === "month" ? "TOKENS BY DAY (MONTH)" : "TOKENS BY DAY"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+              }
+
+              // Newest-first flips the list so the running hour sits on top
+              // and the next one lands above it when it starts.
+              PanelActionButton {
+                id: hourOrderButton
+                visible: root.period === "hour"
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                iconText: root.hourlyNewestFirst ? "↓" : "↑"
+                tooltipText: root.hourlyNewestFirst ? "Mais recente em cima · clique para ordem cronológica" : "Ordem cronológica · clique para mais recente em cima"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                fontSize: Style.font.caption
+                onClicked: root.toggleHourlyOrder()
+              }
             }
 
             Repeater {
