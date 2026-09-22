@@ -518,6 +518,30 @@ Panel {
   // carry nothing worth a row each, and past hourlyRowCap the oldest hours
   // with usage fold too. Day totals stay intact either way.
   function hourlyRows() {
+    if (provider && provider.providerId === "9router" && (provider.todayHours || []).length > 0) {
+      var apiRows = []
+      var currentHour = Qt.formatDateTime(new Date(), "HH:00")
+      var rawHours = provider.todayHours || []
+      for (var apiIndex = 0; apiIndex < rawHours.length; apiIndex++) {
+        var apiHour = rawHours[apiIndex] || {}
+        var apiTokens = Number(apiHour.messageCount || 0)
+        var sourceParts = []
+        var hourSources = apiHour.sources || ({})
+        for (var sourceName in hourSources)
+          if (Number(hourSources[sourceName] || 0) > 0)
+            sourceParts.push(sourceName + " " + usage.formatTokenCount(Number(hourSources[sourceName] || 0)))
+        apiRows.push({
+          date: "",
+          messageCount: apiTokens,
+          current: String(apiHour.label || "") === currentHour,
+          label: String(apiHour.label || ""),
+          tooltip: String(apiHour.label || "") + " · " + usage.formatTokenCount(apiTokens) + " tokens"
+            + (sourceParts.length > 0 ? "\n  " + sourceParts.join(" · ") : "")
+        })
+      }
+      if (root.hourlyNewestFirst) apiRows.reverse()
+      return apiRows
+    }
     var snap = hourData.snapshot || ({})
     var list = snap.hours || []
     var idle = 0
@@ -635,6 +659,8 @@ Panel {
       return combined
     }
     if (kind === "total") return p.modelUsage || ({})
+    var explicit = p.periodTokensByModel || ({})
+    if (explicit[kind] && Object.keys(explicit[kind]).length > 0) return explicit[kind]
     var start = periodStartDate(kind)
     var today = root.todayDate()
     var hist = p.history || []
@@ -721,6 +747,8 @@ Panel {
   // The ledger keeps one total per model (no in/out/cache split), which is
   // the same shape a plain numeric tokensByModel entry already has.
   function hourlyModelRows() {
+    if (provider && provider.providerId === "9router")
+      return modelRowsFromUsage(periodModelMap(provider, "day"), 8)
     var map = ({})
     var models = (hourData.snapshot && hourData.snapshot.models) || ({})
     for (var id in models) addTokenValue(map, id, models[id])
@@ -740,6 +768,17 @@ Panel {
   // Only speaks up when the numbers cover more than this machine.
   function footerText() {
     if (usage.syncStatusText !== "") return usage.syncStatusText
+    if (provider && provider.providerId === "9router" && (provider.sources || []).length > 0) {
+      var sourceBits = []
+      var sources = provider.sources || []
+      for (var si = 0; si < sources.length; si++) {
+        var source = sources[si] || {}
+        var label = String(source.label || "")
+        if (!label) continue
+        sourceBits.push(label + (source.available === false ? " unavailable" : " " + usage.formatTokenCount(Number(source.tokens || 0))))
+      }
+      if (sourceBits.length > 0) return sourceBits.join(" · ")
+    }
     if (provider && provider.providerId === "all") {
       var tokens = 0
       var rows = root.models

@@ -1,15 +1,16 @@
 #!/usr/bin/python3
-"""Print the 9Router usage record as JSON.
+"""Print the federated 9Router usage record as JSON.
 
-Tokens come from ~/.9router/db/data.sqlite usageHistory (NINEROUTER_HOME
-overrides the root). Each row is one HTTP call through the local gateway.
-Dates use the row timestamp in the local timezone. Cached tokens listed
-in the tokens JSON are split out of input when they are included there.
+The running local gateway is authoritative because its dashboard endpoints
+already merge Local and configured peers such as Railway. The collector uses
+the CLI's machine-local auth token and falls back to ~/.9router/db/data.sqlite
+when the gateway is unavailable. No credential is written to the usage record.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -18,9 +19,14 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 
 AGENT_ID = "9router"
 AGENT_NAME = "9Router"
+DEFAULT_BASE_URL = "http://127.0.0.1:20128"
+PERIODS = ("today", "7d", "30d", "all")
 
 
 def router_home() -> Path:
@@ -29,6 +35,32 @@ def router_home() -> Path:
 
 def db_path(home: Path | None = None) -> Path:
     return (home or router_home()) / "db" / "data.sqlite"
+
+def cli_token(home: Path | None = None) -> str:
+    root = home or router_home()
+    try:
+        machine_id = (root / "machine-id").read_text().strip()
+        secret = (root / "auth" / "cli-secret").read_text().strip()
+    except OSError:
+        return ""
+    if not machine_id or not secret:
+        return ""
+    raw = (machine_id + "9r-cli-auth" + secret).encode()
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+def api_json(path: str, params: dict[str, Any] | None = None, *, token: str | None = None,
+             base_url: str | None = None) -> Any:
+    auth = token if token is not None else cli_token()
+    if not auth:
+        raise RuntimeError("9Router CLI token is unavailable")
+    base = (base_url or os.environ.get("NINEROUTER_URL") or DEFAULT_BASE_URL).rstrip("/")
+    query = "?" + urlencode(params) if params else ""
+    request = Request(base + path + query, headers={"x-9r-cli-token": auth, "Accept": "application/json"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            return json.load(response)
+    except (HTTPError, URLError, TimeoutError, ValueError) as error:
+        raise RuntimeError(f"9Router API unavailable: {error}") from error
 
 
 def recent_dates(today: date) -> list[str]:
@@ -126,6 +158,138 @@ def empty_stats(today: date) -> dict[str, Any]:
         "hasPromptStats": True,
         "todayCost": 0.0,
         "totalCost": 0.0,
+        "sources": [],
+        "usageOrigin": "local-db",
+        "scope": "device",
+    }
+
+def source_model_name(row: dict[str, Any], key: str) -> str:
+    key_origin = key.split("|", 1)[0] if "|" in key else ""
+    origin = str(row.get("origin") or key_origin).strip()
+    model = str(row.get("rawModel") or row.get("model") or key.split("|", 1)[-1].split(" (", 1)[0] or "unknown")
+    return f"{origin} · {model}" if origin else model
+
+def api_model_usage(stats: dict[str, Any]) -> tuple[dict[str, dict[str, int]], dict[str, int]]:
+    models: dict[str, dict[str, int]] = {}
+    totals: dict[str, int] = {}
+    for key, raw in (stats.get("byModel") or {}).items():
+        row = raw if isinstance(raw, dict) else {}
+        name = source_model_name(row, str(key))
+        prompt = number(row.get("promptTokens"))
+        completion = number(row.get("completionTokens"))
+        cache_read = number(row.get("cachedTokens"))
+        cache_write = number(row.get("cacheCreationTokens"))
+        bucket = models.setdefault(name, empty_bucket())
+        # 9Router's cachedTokens are a subset of promptTokens, matching the DB
+        # collector's convention: cache is split out, never counted twice.
+        add_bucket(bucket, max(0, prompt - cache_read - cache_write), completion, cache_read, cache_write)
+        totals[name] = totals.get(name, 0) + prompt + completion
+    return models, totals
+
+def chart_dates(period: str, chart: list[dict[str, Any]], today: date) -> list[dict[str, Any]]:
+    if period == "today":
+        day = today.isoformat()
+        return [{"date": day, "messageCount": sum(number(point.get("tokens")) for point in chart)}]
+    start = today - timedelta(days=(6 if period == "7d" else 29))
+    rows = []
+    for index, point in enumerate(chart):
+        rows.append({
+            "date": (start + timedelta(days=index)).isoformat(),
+            "messageCount": number(point.get("tokens")),
+        })
+    return rows
+
+def source_summary(stats: dict[str, Any]) -> list[dict[str, Any]]:
+    return [{
+        "label": str(source.get("label") or ""),
+        "available": source.get("available") is True,
+        "requests": number(source.get("requests")),
+        "tokens": number(source.get("tokens")),
+        "error": str(source.get("error") or ""),
+    } for source in (stats.get("sources") or []) if isinstance(source, dict)]
+
+def collect_api(fetch=api_json) -> dict[str, Any]:
+    today = datetime.now().astimezone().date()
+    period_stats: dict[str, dict[str, Any]] = {}
+    charts: dict[str, list[dict[str, Any]]] = {}
+    api_errors: list[str] = []
+    for period in PERIODS:
+        try:
+            raw = fetch("/api/usage/stats", {"period": period})
+            if not isinstance(raw, dict):
+                raise RuntimeError(f"invalid {period} stats response")
+            period_stats[period] = raw
+        except RuntimeError as error:
+            api_errors.append(f"stats/{period}: {error}")
+        if period != "all":
+            try:
+                chart = fetch("/api/usage/chart", {"period": period})
+                if not isinstance(chart, list):
+                    raise RuntimeError(f"invalid {period} chart response")
+                charts[period] = chart
+            except RuntimeError as error:
+                api_errors.append(f"chart/{period}: {error}")
+
+    # Keep every federated result that did arrive. Falling back to the local
+    # DB is correct only when no stats endpoint was usable at all.
+    if not period_stats:
+        raise RuntimeError("all federated stats requests failed")
+
+    today_stats = period_stats.get("today", {})
+    week_stats = period_stats.get("7d", {})
+    month_stats = period_stats.get("30d", {})
+    all_stats = period_stats.get("all", {})
+    all_models, _ = api_model_usage(all_stats)
+    _, today_models = api_model_usage(today_stats)
+    _, week_models = api_model_usage(week_stats)
+    _, month_models = api_model_usage(month_stats)
+
+    history_by_date: dict[str, dict[str, Any]] = {
+        row["date"]: row for row in chart_dates("30d", charts.get("30d", []), today)
+    }
+    today_s = today.isoformat()
+    history_by_date.setdefault(today_s, {"date": today_s, "messageCount": 0})
+    history_by_date[today_s]["tokensByModel"] = today_models
+    history_by_date[today_s]["prompts"] = number(today_stats.get("totalRequests"))
+    history_by_date[today_s]["sessions"] = 1 if history_by_date[today_s]["prompts"] else 0
+    history_by_date[today_s]["cost"] = round(money(today_stats.get("totalCost")), 6)
+
+    week_rows = chart_dates("7d", charts.get("7d", []), today)
+    today_hours = [{
+        "label": str(point.get("label") or ""),
+        "messageCount": number(point.get("tokens")),
+        "cost": round(money(point.get("cost")), 6),
+        "sources": {
+            str(label): number(values.get("tokens"))
+            for label, values in (point.get("sources") or {}).items()
+            if isinstance(values, dict)
+        },
+    } for point in charts.get("today", [])]
+    return {
+        "todayPrompts": number(today_stats.get("totalRequests")),
+        "todaySessions": 1 if number(today_stats.get("totalRequests")) else 0,
+        "todayTotalTokens": number(today_stats.get("totalPromptTokens")) + number(today_stats.get("totalCompletionTokens")),
+        "todayTokensByModel": today_models,
+        "recentDays": week_rows,
+        "history": [history_by_date[key] for key in sorted(history_by_date)],
+        "totalPrompts": number(all_stats.get("totalRequests")),
+        "totalSessions": sum(1 for row in history_by_date.values() if number(row.get("messageCount")) > 0),
+        "activeDays": sum(1 for row in history_by_date.values() if number(row.get("messageCount")) > 0),
+        "activeDates": [key for key in sorted(history_by_date) if number(history_by_date[key].get("messageCount")) > 0],
+        "modelUsage": all_models,
+        "periodTokensByModel": {"day": today_models, "week": week_models, "month": month_models},
+        "todayHours": today_hours,
+        "hasLocalStats": True,
+        "hasPromptStats": True,
+        "todayCost": round(money(today_stats.get("totalCost")), 6),
+        "totalCost": round(money(all_stats.get("totalCost")), 6),
+        "sources": source_summary(today_stats or all_stats),
+        "usageOrigin": "federated-api",
+        "apiErrors": api_errors,
+        # The API is upstream/federated truth. Multiple synced desktops can
+        # observe the same Railway rows, so treating it as device-local would
+        # multiply the whole federated total once per snapshot.
+        "scope": "account",
     }
 
 
@@ -182,7 +346,7 @@ def scan_db(path: Path) -> dict[str, Any]:
     }
 
 
-def collect(path: Path | None = None) -> dict[str, Any]:
+def collect_db(path: Path | None = None) -> dict[str, Any]:
     today = datetime.now().astimezone().date()
     today_s = today.isoformat()
     week = recent_dates(today)
@@ -224,7 +388,19 @@ def collect(path: Path | None = None) -> dict[str, Any]:
         "hasPromptStats": True,
         "todayCost": round(scanned["daily_cost"].get(today_s, 0.0), 6),
         "totalCost": round(scanned["total_cost"], 6),
+        "sources": [{"label": "Local", "available": True, "requests": scanned["prompts"],
+                     "tokens": sum(sum(bucket.values()) for bucket in scanned["models"].values()), "error": ""}],
+        "usageOrigin": "local-db",
+        "scope": "device",
     }
+
+def collect(path: Path | None = None, fetch=api_json) -> dict[str, Any]:
+    if path is not None:
+        return collect_db(path)
+    try:
+        return collect_api(fetch)
+    except RuntimeError:
+        return collect_db()
 
 
 def status_line(stats: dict[str, Any]) -> str:
@@ -235,6 +411,10 @@ def status_line(stats: dict[str, Any]) -> str:
     if total_cost > 0:
         return f"US$ {total_cost:.2f} recorded"
     return ""
+
+def source_status(stats: dict[str, Any]) -> str:
+    available = [str(source.get("label")) for source in stats.get("sources", []) if source.get("available")]
+    return " + ".join(label for label in available if label)
 
 
 def main() -> int:
@@ -251,7 +431,7 @@ def main() -> int:
         "name": AGENT_NAME,
         "updatedAt": datetime.now(timezone.utc).isoformat(),
         "ready": ready,
-        "tierLabel": "Gateway",
+        "tierLabel": source_status(stats) or "Gateway",
         "usageStatusText": status_line(stats),
         "authHelpText": "" if db_path().is_file() else "9Router is not running on this machine.",
         "limits": [],

@@ -440,6 +440,8 @@ Item {
       // across devices.
       limits: Array.isArray(record.limits) ? record.limits : [],
       tierLabel: String(record.tierLabel || ""),
+      sources: synced && Array.isArray(stats.sources) ? stats.sources : (Array.isArray(record.sources) ? record.sources : []),
+      usageOrigin: String(synced ? (stats.usageOrigin || record.usageOrigin || "") : (record.usageOrigin || "")),
       balance: balanceValue(record.balance),
       updatedAt: synced ? (stats.updatedAt || record.updatedAt || "") : (record.updatedAt || ""),
 
@@ -448,6 +450,8 @@ Item {
       todayTotalTokens: today.todayTotalTokens,
       chipName: chipNameFor(String(record.id), String(record.name || record.id)),
       todayTokensByModel: today.todayTokensByModel,
+      periodTokensByModel: synced ? (stats.periodTokensByModel || ({})) : (record.periodTokensByModel || ({})),
+      todayHours: synced ? (stats.todayHours || []) : (record.todayHours || []),
       recentDays: synced ? (stats.recentDays || []) : (record.recentDays || []),
       history: synthesizeHistory(synced ? {
         history: stats.history,
@@ -766,6 +770,9 @@ Item {
         todaySessions: 0,
         todayTotalTokens: 0,
         todayTokensByModel: ({}),
+        periodTokensByModel: ({ day: ({}), week: ({}), month: ({}) }),
+        todayHours: ({}),
+        sources: ({}),
         recentByDay: recentByDay,
         totalPrompts: 0,
         totalSessions: 0,
@@ -806,6 +813,40 @@ Item {
         for (var ad = 0; ad < activeDates.length; ad++) acc.activeDates[String(activeDates[ad])] = true
         acc.activeDays = Math.max(acc.activeDays, numberValue(stats.activeDays))
         combineObjectNumbers(additive, acc.todayTokensByModel, today.todayTokensByModel)
+        var periodMaps = stats.periodTokensByModel || {}
+        var periodNames = ["day", "week", "month"]
+        for (var pi = 0; pi < periodNames.length; pi++) {
+          var periodName = periodNames[pi]
+          combineObjectNumbers(additive, acc.periodTokensByModel[periodName], periodMaps[periodName] || {})
+        }
+
+        var hours = Array.isArray(stats.todayHours) ? stats.todayHours : []
+        for (var hi = 0; hi < hours.length; hi++) {
+          var hour = hours[hi] || {}
+          var hourLabel = String(hour.label || "")
+          if (hourLabel === "") continue
+          if (!acc.todayHours[hourLabel])
+            acc.todayHours[hourLabel] = { label: hourLabel, messageCount: 0, cost: 0, sources: ({}) }
+          var hourAcc = acc.todayHours[hourLabel]
+          hourAcc.messageCount = combineNumber(additive, hourAcc.messageCount, hour.messageCount)
+          hourAcc.cost = additive ? Number(hourAcc.cost || 0) + Number(hour.cost || 0)
+            : Math.max(Number(hourAcc.cost || 0), Number(hour.cost || 0))
+          combineObjectNumbers(additive, hourAcc.sources, hour.sources || {})
+        }
+
+        var sourceRows = Array.isArray(stats.sources) ? stats.sources : []
+        for (var si = 0; si < sourceRows.length; si++) {
+          var source = sourceRows[si] || {}
+          var sourceLabel = String(source.label || "")
+          if (sourceLabel === "") continue
+          if (!acc.sources[sourceLabel])
+            acc.sources[sourceLabel] = { label: sourceLabel, available: false, requests: 0, tokens: 0, error: "" }
+          var sourceAcc = acc.sources[sourceLabel]
+          sourceAcc.available = sourceAcc.available || source.available === true
+          sourceAcc.requests = combineNumber(additive, sourceAcc.requests, source.requests)
+          sourceAcc.tokens = combineNumber(additive, sourceAcc.tokens, source.tokens)
+          if (!sourceAcc.available && source.error) sourceAcc.error = String(source.error)
+        }
 
         var recent = Array.isArray(stats.recentDays) ? stats.recentDays : []
         for (var r = 0; r < recent.length; r++) {
@@ -830,6 +871,12 @@ Item {
       var recentDays = []
       for (var di = 0; di < dates.length; di++) recentDays.push({ date: dates[di], messageCount: acc.recentByDay[dates[di]] || 0 })
       var providerDevices = Object.keys(acc.devices).sort()
+      var todayHours = []
+      var hourLabels = Object.keys(acc.todayHours).sort()
+      for (var hi = 0; hi < hourLabels.length; hi++) todayHours.push(acc.todayHours[hourLabels[hi]])
+      var sources = []
+      var sourceLabels = Object.keys(acc.sources).sort()
+      for (var si = 0; si < sourceLabels.length; si++) sources.push(acc.sources[sourceLabels[si]])
       outProviders[id] = {
         providerId: acc.providerId,
         providerName: acc.providerName,
@@ -840,6 +887,9 @@ Item {
         todaySessions: acc.todaySessions,
         todayTotalTokens: acc.todayTotalTokens,
         todayTokensByModel: acc.todayTokensByModel,
+        periodTokensByModel: acc.periodTokensByModel,
+        todayHours: todayHours,
+        sources: sources,
         recentDays: recentDays,
         totalPrompts: acc.totalPrompts,
         totalSessions: acc.totalSessions,
@@ -876,6 +926,9 @@ Item {
       todaySessions: today.todaySessions,
       todayTotalTokens: today.todayTotalTokens,
       todayTokensByModel: cloneValue(today.todayTokensByModel, ({})),
+      periodTokensByModel: cloneValue(record.periodTokensByModel, ({})),
+      todayHours: cloneValue(record.todayHours, []),
+      sources: cloneValue(record.sources, []),
       recentDays: cloneValue(record.recentDays, []),
       totalPrompts: numberValue(record.totalPrompts),
       totalSessions: numberValue(record.totalSessions),
@@ -930,7 +983,14 @@ Item {
   // version and title-case the words around it.
   function friendlyModelName(id) {
     if (!id) return "Unknown"
-    var name = String(id).replace(/^claude-/, "").replace(/-\d{8}$/, "")
+    var raw = String(id)
+    var origin = ""
+    var separator = raw.indexOf(" · ")
+    if (separator >= 0) {
+      origin = raw.slice(0, separator + 3)
+      raw = raw.slice(separator + 3)
+    }
+    var name = raw.replace(/^claude-/, "").replace(/-\d{8}$/, "")
     var parts = name.split("-")
     var words = []
     var version = []
@@ -948,6 +1008,6 @@ Item {
       words.push(modelWordCase(part))
     }
     if (version.length > 0) words.push(version.join("."))
-    return words.length > 0 ? words.join(" ") : "Unknown"
+    return origin + (words.length > 0 ? words.join(" ") : "Unknown")
   }
 }

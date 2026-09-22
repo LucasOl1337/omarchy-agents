@@ -59,6 +59,12 @@ def period_model_map(p, kind, today):
         for mid, val in (p.get("modelUsage") or {}).items():
             add_token(usage, mid, val)
         return usage
+    explicit = p.get("periodTokensByModel") or {}
+    if explicit.get(kind):
+        usage = {}
+        for mid, val in explicit[kind].items():
+            add_token(usage, mid, val)
+        return usage
     start = period_start(kind, today)
     usage = {}
     today_covered = False
@@ -171,6 +177,20 @@ class PeriodModelMapTests(unittest.TestCase):
         }
         usage = period_model_map(stale, "day", self.today)
         self.assertEqual(usage, {})
+
+    def test_federated_explicit_period_keeps_origins_separate(self):
+        router = {
+            "providerId": "9router",
+            "periodTokensByModel": {
+                "week": {"Local · same": 11, "Railway · same": 99},
+            },
+            "history": [],
+            "modelUsage": {"Local · same": {"inputTokens": 9999}},
+        }
+        usage = period_model_map(router, "week", self.today)
+        self.assertEqual(bucket_total(usage["Local · same"]), 11)
+        self.assertEqual(bucket_total(usage["Railway · same"]), 99)
+        self.assertEqual(usage_map_total(usage), 110)
 
 
 if __name__ == "__main__":

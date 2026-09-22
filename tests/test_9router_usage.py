@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 _path = Path(__file__).parents[1] / "bin/omarchy-agent-usage-9router"
 _loader = importlib.machinery.SourceFileLoader("ninerouter_usage", str(_path))
@@ -136,6 +137,79 @@ class NineRouterUsageTests(unittest.TestCase):
         }])
         stats = ninerouter.collect(path)
         self.assertEqual(stats["totalPrompts"], 0)
+
+    def _federated_fetch(self, path, params):
+        period = params["period"]
+        if path.endswith("/chart"):
+            size = 24 if period == "today" else (7 if period == "7d" else 30)
+            return [{
+                "label": f"{index:02d}:00" if period == "today" else f"day-{index}",
+                "tokens": (index + 1) * 10,
+                "cost": index / 10,
+                "sources": {"Local": {"tokens": index + 1}, "Railway": {"tokens": (index + 1) * 9}},
+            } for index in range(size)]
+        multiplier = {"today": 1, "7d": 2, "30d": 3, "all": 4}[period]
+        return {
+            "totalRequests": 3 * multiplier,
+            "totalPromptTokens": 100 * multiplier,
+            "totalCompletionTokens": 10 * multiplier,
+            "totalCost": 1.25 * multiplier,
+            "sources": [
+                {"label": "Local", "available": True, "requests": multiplier, "tokens": 20 * multiplier},
+                {"label": "Railway", "available": True, "requests": 2 * multiplier, "tokens": 90 * multiplier},
+            ],
+            "byModel": {
+                "Local|same (codex)": {"origin": "Local", "rawModel": "same", "promptTokens": 10 * multiplier,
+                                          "completionTokens": multiplier, "cachedTokens": 2 * multiplier},
+                "Railway|same (codex)": {"origin": "Railway", "rawModel": "same", "promptTokens": 90 * multiplier,
+                                            "completionTokens": 9 * multiplier, "cachedTokens": 20 * multiplier},
+            },
+        }
+
+    def test_federated_api_sums_sources_and_keeps_model_origins_separate(self):
+        stats = ninerouter.collect_api(self._federated_fetch)
+        self.assertEqual(stats["usageOrigin"], "federated-api")
+        self.assertEqual(stats["scope"], "account")
+        self.assertEqual(stats["apiErrors"], [])
+        self.assertEqual(stats["todayPrompts"], 3)
+        self.assertEqual(stats["todayTotalTokens"], 110)
+        self.assertEqual(stats["todayCost"], 1.25)
+        self.assertEqual([source["label"] for source in stats["sources"]], ["Local", "Railway"])
+        self.assertEqual(stats["todayTokensByModel"], {"Local · same": 11, "Railway · same": 99})
+        self.assertEqual(set(stats["modelUsage"]), {"Local · same", "Railway · same"})
+        self.assertEqual(sum(row["messageCount"] for row in stats["todayHours"]), 3000)
+        self.assertEqual(stats["todayHours"][0]["sources"], {"Local": 1, "Railway": 9})
+
+    def test_collect_falls_back_to_local_db_when_api_is_unavailable(self):
+        now = datetime.now().astimezone().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        path = self._db([{"timestamp": now, "model": "local-only", "promptTokens": 5, "completionTokens": 1}])
+        with patch.object(ninerouter, "db_path", return_value=path):
+            stats = ninerouter.collect(fetch=lambda *_: (_ for _ in ()).throw(RuntimeError("offline")))
+        self.assertEqual(stats["usageOrigin"], "local-db")
+        self.assertEqual(stats["todayTotalTokens"], 6)
+        self.assertEqual(stats["sources"][0]["label"], "Local")
+        self.assertEqual(stats["scope"], "device")
+
+    def test_one_failed_chart_keeps_federated_stats(self):
+        def fetch(path, params):
+            if path.endswith("/chart") and params["period"] == "7d":
+                raise RuntimeError("temporary chart failure")
+            return self._federated_fetch(path, params)
+
+        stats = ninerouter.collect_api(fetch)
+        self.assertEqual(stats["usageOrigin"], "federated-api")
+        self.assertEqual(stats["todayTotalTokens"], 110)
+        self.assertEqual(stats["recentDays"], [])
+        self.assertTrue(any(error.startswith("chart/7d:") for error in stats["apiErrors"]))
+
+    def test_cli_token_matches_server_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "auth").mkdir()
+            (root / "machine-id").write_text("machine")
+            (root / "auth" / "cli-secret").write_text("secret")
+            expected = __import__("hashlib").sha256(b"machine9r-cli-authsecret").hexdigest()[:16]
+            self.assertEqual(ninerouter.cli_token(root), expected)
 
 
 if __name__ == "__main__":
