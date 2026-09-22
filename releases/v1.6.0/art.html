@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; min-height: 1320px; }
+  body {
+    background: linear-gradient(155deg, #160D31 0%, #1D113D 48%, #28184D 100%);
+    color: #F7F3FB;
+    font-family: "Inter", "Liberation Sans", "Segoe UI", sans-serif;
+    padding: 68px 72px 58px;
+    position: relative;
+    overflow: hidden;
+  }
+  body:after {
+    content: ""; position: absolute; width: 520px; height: 520px; right: -180px; top: -170px;
+    border: 1px solid rgba(255,198,26,.13); transform: rotate(45deg); box-shadow: 0 0 0 58px rgba(170,136,250,.035);
+  }
+  .corner { position: absolute; width: 36px; height: 36px; border: 2px solid rgba(188,177,210,.45); }
+  .tl { top: 28px; left: 28px; border-right: 0; border-bottom: 0; }
+  .tr { top: 28px; right: 28px; border-left: 0; border-bottom: 0; }
+  .bl { bottom: 28px; left: 28px; border-right: 0; border-top: 0; }
+  .br { bottom: 28px; right: 28px; border-left: 0; border-top: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; position: relative; z-index: 1; }
+  .brand { display: flex; align-items: center; gap: 20px; }
+  h1 { font-size: 48px; line-height: 1; font-weight: 800; letter-spacing: -.8px; }
+  .tag { padding: 9px 22px; border-radius: 999px; color: #160D31; font-size: 20px; font-weight: 800; background: linear-gradient(90deg,#FFC61A,#AA88FA); }
+  .org { text-align: right; color: #BCB1D2; }
+  .org strong { display: block; font-size: 18px; letter-spacing: 5px; }
+  .org span { display: block; font-size: 18px; margin-top: 10px; }
+  .kicker { margin-top: 34px; color: #FFD89A; font-size: 22px; font-weight: 800; letter-spacing: 6px; }
+  .rule { height: 1px; background: rgba(188,177,210,.25); margin: 24px 0 22px; }
+  .summary { max-width: 930px; color: #D5CCE5; font-size: 23px; line-height: 1.42; }
+  section { margin-top: 46px; }
+  .sec-head { display: flex; align-items: center; gap: 16px; }
+  .sec-bar { width: 7px; height: 34px; border-radius: 4px; }
+  .sec-title { font-size: 23px; font-weight: 800; letter-spacing: 5px; }
+  .sec-count { margin-left: auto; color: #AFA5C5; font-size: 18px; }
+  ul { list-style: none; margin-top: 18px; }
+  li { display: grid; grid-template-columns: 14px minmax(0,1fr) 125px; gap: 18px; align-items: start; padding: 14px 0; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 9px; }
+  .copy { font-size: 22px; line-height: 1.38; }
+  .item { color: #F7F3FB; font-weight: 700; }
+  .benefit { color: #CEC4DE; font-weight: 400; }
+  .area { padding-top: 5px; text-align: right; color: #AFA5C5; font-size: 16px; font-weight: 700; letter-spacing: 2px; }
+  .new .sec-title { color: #FFC61A; } .new .sec-bar, .new .dot { background: #FFC61A; }
+  .improve .sec-title { color: #2DD29A; } .improve .sec-bar, .improve .dot { background: #2DD29A; }
+  .fix .sec-title { color: #30BCEF; } .fix .sec-bar, .fix .dot { background: #30BCEF; }
+  footer { margin-top: 54px; }
+  .motto { font-size: 25px; font-weight: 700; color: #FFD89A; }
+  .note { margin-top: 13px; color: #BCB1D2; font-size: 18px; }
+  .platform { margin-top: 34px; color: #9F94BB; font-size: 16px; font-weight: 800; letter-spacing: 5px; }
+</style>
+</head>
+<body>
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+  <header>
+    <div class="brand"><h1>Omarchy Agents</h1><span class="tag">v1.6.0</span></div>
+    <div class="org"><strong>LUCASOL</strong><span>September 22, 2026</span></div>
+  </header>
+  <div class="kicker">RELEASE NOTES</div>
+  <div class="rule"></div>
+  <div class="summary">Pick the right subscription, follow today hour by hour, and see 9Router across Local + Railway.</div>
+
+  <section class="new">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">WHAT'S NEW</span><span class="sec-count">2 highlights</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Radar recommendations</span><span class="benefit"> · weekly pools ranked by headroom and reset timing</span></div><span class="area">QUOTAS</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Federated 9Router</span><span class="benefit"> · Local + Railway totals with every origin preserved</span></div><span class="area">GATEWAY</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+  <section class="improve">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">IMPROVEMENTS</span><span class="sec-count">2 highlights</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Hour follows today</span><span class="benefit"> · midnight to now, newest-first option, model and project details</span></div><span class="area">PANEL</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Lighter Codex refresh</span><span class="benefit"> · compatible quota reads and cached session-file totals</span></div><span class="area">COLLECTOR</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+  <section class="fix">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">FIXES</span><span class="sec-count">3 verified</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Codex plan meters return</span><span class="benefit"> · current CLI approval flags no longer leave the tab in BYO</span></div><span class="area">CODEX</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Sync-safe federation</span><span class="benefit"> · Railway totals are not multiplied across desktop snapshots</span></div><span class="area">SYNC</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Partial API resilience</span><span class="benefit"> · one failed chart no longer discards valid federated stats</span></div><span class="area">9ROUTER</span></li>
+    </ul>
+  </section>
+
+  <footer>
+    <div class="rule"></div>
+    <div class="motto">One icon, every harness, honest numbers.</div>
+    <div class="note">Full notes, compatibility details, and validation on GitHub Releases.</div>
+    <div class="platform">LOL.AGENTS PLUGIN</div>
+  </footer>
+</body>
+</html>
