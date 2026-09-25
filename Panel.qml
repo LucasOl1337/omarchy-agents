@@ -92,13 +92,24 @@ Panel {
   }
 
   function refreshNow() {
-    if (activeView === "projects") projectData.refresh()
-    else if (activeView === "live") liveData.refresh()
-    else if (activeView === "radar") usage.refreshLimits()
+    nowMs = Date.now()
+    if (activeView === "projects") projectData.forceRefresh()
+    else if (activeView === "live") liveData.forceRefresh()
+    else if (activeView === "radar") usage.forceRefresh()
     else {
-      usage.refreshAll(true)
-      if (period === "hour") hourData.refresh()
+      usage.forceRefresh()
+      if (period === "hour") hourData.forceRefresh()
     }
+  }
+
+  readonly property bool refreshBusy: usage.updating || (period === "hour" && hourData.busy)
+
+  // "lido 16:52" next to the button; the hour ledger's own stamp when Hour is
+  // on screen, else the last finished collector run.
+  function lastReadLabel() {
+    var ms = period === "hour" && hourData.updatedAt > 0 ? hourData.updatedAt * 1000 : usage.lastUpdateMs
+    if (!(ms > 0)) return ""
+    return "lido " + Qt.formatDateTime(new Date(ms), "HH:mm")
   }
 
   function launchAgent() {
@@ -991,6 +1002,36 @@ Panel {
             meta: root.heroMeta(root.provider)
             foreground: root.foreground
             fontFamily: root.fontFamily
+
+            // Forces a full reread: kills a wedged collector and rescans the
+            // ledger, so the hours catch up without restarting the shell.
+            trailingControl: Component {
+              Row {
+                spacing: Style.space(6)
+
+                Text {
+                  textFormat: Text.PlainText
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.refreshBusy ? "atualizando…" : root.lastReadLabel()
+                  visible: text !== ""
+                  color: root.dim
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+
+                PanelActionButton {
+                  anchors.verticalCenter: parent.verticalCenter
+                  iconText: "↻"
+                  bordered: true
+                  enabled: !root.refreshBusy
+                  tooltipText: "Atualizar agora (R)"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  fontSize: Style.font.body
+                  onClicked: root.refreshNow()
+                }
+              }
+            }
 
             iconComponent: Component {
               Item {

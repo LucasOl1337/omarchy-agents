@@ -125,10 +125,20 @@ Item {
     onTriggered: root.runUpdate("normal")
   }
 
+  // Collectors normally finish in well under a minute; one that hangs on a
+  // dead endpoint would park every later refresh in pendingUpdateKind.
+  Timer {
+    id: updateWatchdog
+    interval: 300000
+    onTriggered: if (updateProcess.running) root.forceRefresh()
+  }
+
   Process {
     id: updateProcess
     running: false
     onExited: {
+      updateWatchdog.stop()
+      root.lastUpdateMs = Date.now()
       root.rescanAgents()
       if (root.pendingUpdateKind !== "") {
         var kind = root.pendingUpdateKind
@@ -172,6 +182,21 @@ Item {
     }
     updateProcess.command = updateCommand(kind, agentIds)
     updateProcess.running = true
+    updateWatchdog.restart()
+  }
+
+  readonly property bool updating: updateProcess.running
+  property real lastUpdateMs: 0
+
+  // The panel's refresh button: drop whatever run is in flight (it may be
+  // wedged) and start a full forced one.
+  function forceRefresh() {
+    if (updateProcess.running) {
+      pendingUpdateKind = "force"
+      updateProcess.running = false
+      return
+    }
+    runUpdate("force")
   }
 
   function refresh() { refreshAll(true) }
