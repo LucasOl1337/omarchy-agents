@@ -215,12 +215,107 @@ Panel {
   // Exhausted (>= 1.0) always sink, ordered by soonest reset. Alarming
   // (>= 0.9) sit just above them unless the reset is imminent (< 30m), in
   // which case the row stays usable and is tagged "quase reset". One of
-  // the five with no windows (and no prepaid ledger) goes to Sem cota /
-  // BYO, ranked by today's tokens — they never mix into the quota list.
+  // the five with no windows, no prepaid ledger and no plan name goes to
+  // Sem cota / BYO. A named plan whose percentage did not come back, or a
+  // login that dropped, gets a warning line above the ranking instead, so a
+  // subscription that dropped and returned is not filed as bring-your-own.
 
   readonly property var radarQuotaRows: buildRadarQuotaRows(nowMs, providers)
   readonly property var radarByoRows: buildRadarByoRows(providers)
-  readonly property string radarSummary: buildRadarSummary(radarQuotaRows)
+  readonly property var radarAccountRows: buildRadarAccountRows(providers)
+
+  function shellQuote(value) {
+    return "'" + String(value || "").replace(/'/g, "'\\''") + "'"
+  }
+
+  // Real auth trouble sets both strings. Claude and Codex keep a login hint
+  // in authHelpText even while signed in, so the hint alone is not a drop.
+  function accountAuthBroken(p) {
+    return !!p && String(p.usageStatusText || "") !== "" && String(p.authHelpText || "") !== ""
+  }
+
+  // The account answered with a plan and no weekly percentage. quotaState
+  // is the collector's word; a tier with an empty ledger means the same
+  // thing on a record written before that field existed.
+  function accountQuotaMissing(p) {
+    if (!p || p.providerId === "all") return false
+    var state = String(p.quotaState || "")
+    if (state === "unread") return true
+    if (state === "ok" || state === "auth") return false
+    if (limitWindows(p).length > 0) return false
+    if (p.balance && p.balance.funded > 0) return false
+    return radarTier(p) !== ""
+  }
+
+  function accountReading(p) {
+    if (!p) return ""
+    if (String(p.quotaState || "") === "auth" || accountAuthBroken(p)) return "login caiu"
+    var windows = limitWindows(p)
+    var picked = null
+    for (var w = 0; w < windows.length; w++) {
+      if (!radarWindowAllowed(p.providerId, windows[w])) continue
+      if (!picked || windows[w].percent > picked.percent) picked = windows[w]
+    }
+    if (picked) return picked.title + " " + Math.round(picked.percent * 100) + "%"
+    if (p.balance && p.balance.funded > 0)
+      return formatMoney(p.balance.remaining, p.balance.currency) + " restantes"
+    if (accountQuotaMissing(p)) return "cota não veio"
+    return "sem leitura"
+  }
+
+  function buildRadarAccountRows(list) {
+    var rows = []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p || p.providerId === "all") continue
+      if (!radarProviderAllowed(p.providerId)) continue
+      var tier = radarTier(p)
+      var held = tier !== "" || accountAuthBroken(p) || String(p.quotaState || "") === "auth"
+      var windows = limitWindows(p)
+      for (var w = 0; w < windows.length && !held; w++)
+        if (radarWindowAllowed(p.providerId, windows[w])) held = true
+      if (!held && p.balance && p.balance.funded > 0) held = true
+      if (!held) continue
+      var broken = accountAuthBroken(p) || String(p.quotaState || "") === "auth"
+      // A healthy account is already a ranked row; only trouble earns a line.
+      if (!broken && !accountQuotaMissing(p)) continue
+      rows.push({
+        key: p.providerId,
+        providerId: p.providerId,
+        harness: radarHarness(p),
+        tier: tier,
+        reading: accountReading(p),
+        action: broken ? "entrar" : "reler",
+        stale: true
+      })
+    }
+    rows.sort(function(a, b) { return String(a.harness).localeCompare(String(b.harness)) })
+    return rows
+  }
+
+  // A dropped login opens the CLI login for that subscription, then rereads
+  // only its quota. Anything else just rereads it.
+  function updateAccount(providerId) {
+    var id = String(providerId || "")
+    var login = ""
+    if (id === "claude") login = "claude auth login"
+    else if (id === "grok") login = "grok login"
+    else if (id === "codex") login = "codex login"
+    else if (id === "cursor") login = "agent login"
+    else if (id === "antigravity") login = "agy"
+    var broken = false
+    for (var i = 0; i < providers.length; i++) {
+      var p = providers[i]
+      if (!p || p.providerId !== id) continue
+      broken = accountAuthBroken(p) || String(p.quotaState || "") === "auth"
+    }
+    if (!root.bar || login === "" || !broken) {
+      usage.runUpdate("force", [id])
+      return
+    }
+    var inner = login + " && " + usage.pluginFile("bin/update") + " --limits-only " + id
+    root.bar.run("omarchy-launch-floating-terminal-with-presentation " + shellQuote(inner))
+  }
 
   function radarHarness(p) {
     return p ? String(p.chipName || p.providerName || "") : ""
@@ -240,15 +335,19 @@ Panel {
     return "other"
   }
 
-  function radarWhy(harness, title, percent, resetMs, exhausted, alarming, imminent) {
-    // Prefer the window title alone; the row header already shows the harness.
-    var name = String(title || harness || "")
-    var line = exhausted
-      ? name + " 100% · esgotado"
-      : name + " " + Math.round(Number(percent) * 100) + "% usado"
+  // Pool name without the word the whole radar is about: "Weekly" says
+  // nothing, "Gemini Weekly" is the Gemini pool, Cursor's pools keep theirs.
+  function radarPool(title) {
+    var name = String(title || "")
+    if (name.toLowerCase() === "weekly") return ""
+    return name.replace(/\s+weekly$/i, "")
+  }
+
+  // The one line the row needs: what is left and when it comes back.
+  function radarWhy(percent, resetMs, exhausted, alarming, imminent) {
+    var line = exhausted ? "esgotado" : Math.round(Math.max(0, 1 - Number(percent)) * 100) + "% livre"
     if (!exhausted && alarming && imminent) line += " · quase reset"
-    else if (!exhausted && alarming) line += " · alarmante"
-    if (resetMs > 0) line += " · reset em " + formatDuration(resetMs)
+    if (resetMs > 0) line += (exhausted ? " · volta em " : " · reset em ") + formatDuration(resetMs)
     return line
   }
 
@@ -348,7 +447,8 @@ Panel {
           band: band,
           score: radarScore(percent, resetMs, band),
           badge: exhausted ? "esgotado" : (alarming && imminent ? "quase reset" : (alarming ? "alarmante" : "")),
-          why: radarWhy(harness, win.title, percent, resetMs, exhausted, alarming, imminent),
+          pool: radarPool(win.title),
+          why: radarWhy(percent, resetMs, exhausted, alarming, imminent),
           balanceText: w === 0 ? balanceText : ""
         })
       }
@@ -369,6 +469,8 @@ Panel {
       if (!radarProviderAllowed(p.providerId)) continue
       if (limitWindows(p).length > 0) continue
       if (p.balance && p.balance.funded > 0) continue
+      // A named plan, or a login that dropped, belongs in Contas.
+      if (radarTier(p) !== "" || accountAuthBroken(p) || String(p.quotaState || "") === "auth") continue
       var today = Number(p.todayTotalTokens || 0)
       rows.push({
         key: p.providerId,
@@ -381,20 +483,6 @@ Panel {
     }
     rows.sort(function(a, b) { return b.todayTokens - a.todayTokens })
     return rows
-  }
-
-  function buildRadarSummary(rows) {
-    var next = null
-    var exhausted = []
-    for (var i = 0; i < rows.length; i++) {
-      var row = rows[i]
-      if (row.exhausted) exhausted.push(row.title.indexOf(row.harness) >= 0 ? row.title : (row.harness + " " + row.title))
-      if (row.resetMs > 0 && (!next || row.resetMs < next.resetMs)) next = row
-    }
-    var lines = []
-    if (next) lines.push("Próximo reset · " + next.harness + " " + next.title + " em " + formatDuration(next.resetMs))
-    if (exhausted.length > 0) lines.push("Esgotadas · " + exhausted.join(", "))
-    return lines.join("\n")
   }
 
   // ---------------------------------------------------------------- balance
@@ -426,13 +514,17 @@ Panel {
   // ---------------------------------------------------------------- content
 
   // The plan you pay for, under the name of the tool it pays for. Limits live
-  // in their own section; the hero just says what this is.
+  // in their own section; the hero just says what this is. A signed-in plan
+  // whose weekly percentage did not come back stays named, with that gap
+  // on the same line, instead of being replaced by a status string.
   function heroMeta(p) {
     if (!p) return ""
-    if (String(p.usageStatusText || "") !== "") return p.usageStatusText
+    if (accountAuthBroken(p)) return String(p.usageStatusText || "")
     var tier = String(p.tierLabel || "")
-    if (tier === "") return "Subscription"
-    return tier.charAt(0).toUpperCase() + tier.slice(1)
+    var label = tier === "" ? "Subscription" : tier.charAt(0).toUpperCase() + tier.slice(1)
+    if (accountQuotaMissing(p)) return label + " · cota não veio"
+    if (String(p.usageStatusText || "") !== "") return p.usageStatusText
+    return label
   }
 
   // Local calendar date, recomputed from nowMs so a panel left open across
@@ -1098,12 +1190,16 @@ Panel {
             width: parent.width
             quotaRows: root.radarQuotaRows
             byoRows: root.radarByoRows
-            summary: root.radarSummary
+            accountRows: root.radarAccountRows
+            refreshing: root.refreshBusy
+            readLabel: root.refreshBusy ? "atualizando…" : root.lastReadLabel()
             foreground: root.foreground
             dim: root.dim
             urgent: root.urgent
             track: root.track
             fontFamily: root.fontFamily
+            onRefreshRequested: root.refreshNow()
+            onAccountUpdateRequested: function(providerId) { root.updateAccount(providerId) }
           }
 
           // ---------- Status ----------

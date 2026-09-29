@@ -6,6 +6,7 @@ Cursor, Antigravity — one weekly pool each. Sessions, extra model-scoped
 pools, and every other harness stay out; exhausted pools sink; providers
 with no limits never mix into the quota list.
 """
+import re
 import unittest
 
 
@@ -62,20 +63,19 @@ def radar_score(percent, reset_ms, band):
     return score
 
 
-def radar_why(harness, title, percent, reset_ms, exhausted, alarming, imminent):
+def radar_pool(title):
     name = str(title or "")
-    if str(harness or "") not in name:
-        name = f"{harness} {name}".strip()
-    if exhausted:
-        line = f"{name} 100% · esgotado"
-    else:
-        line = f"{name} {round(percent * 100)}% usado"
-        if alarming and imminent:
-            line += " · quase reset"
-        elif alarming:
-            line += " · alarmante"
+    if name.lower() == "weekly":
+        return ""
+    return re.sub(r"\s+weekly$", "", name, flags=re.I)
+
+
+def radar_why(percent, reset_ms, exhausted, alarming, imminent):
+    line = "esgotado" if exhausted else f"{round(max(0.0, 1.0 - percent) * 100)}% livre"
+    if not exhausted and alarming and imminent:
+        line += " · quase reset"
     if reset_ms > 0:
-        line += " · reset em " + format_duration(reset_ms)
+        line += (" · volta em " if exhausted else " · reset em ") + format_duration(reset_ms)
     return line
 
 
@@ -145,11 +145,97 @@ def build_quota_rows(providers, now_ms=0):
                 "badge": "esgotado" if exhausted else (
                     "quase reset" if alarming and imminent else ("alarmante" if alarming else "")
                 ),
-                "why": radar_why(harness, win.get("title") or "Limit", percent, reset_ms,
-                                 exhausted, alarming, imminent),
+                "pool": radar_pool(win.get("title") or "Limit"),
+                "why": radar_why(percent, reset_ms, exhausted, alarming, imminent),
                 "balanceText": balance_text if i == 0 else "",
             })
     rows.sort(key=lambda r: (r["band"], -r["score"], r["harness"]))
+    return rows
+
+
+def radar_tier(p):
+    tier = str((p or {}).get("tierLabel") or "")
+    return (tier[:1].upper() + tier[1:]) if tier else ""
+
+
+def account_auth_broken(p):
+    return bool(str(p.get("usageStatusText") or "")) and bool(str(p.get("authHelpText") or ""))
+
+
+def allowed_windows(p):
+    picked = []
+    for win in p.get("limits") or []:
+        title = win.get("title") or win.get("label") or ""
+        if radar_window_allowed(p.get("providerId"), title):
+            picked.append(win)
+    return picked
+
+
+def account_quota_missing(p):
+    if not p or p.get("providerId") == "all":
+        return False
+    state = str(p.get("quotaState") or "")
+    if state == "unread":
+        return True
+    if state in ("ok", "auth"):
+        return False
+    if p.get("limits"):
+        return False
+    balance = p.get("balance") or {}
+    if float(balance.get("funded") or 0) > 0:
+        return False
+    return radar_tier(p) != ""
+
+
+def account_reading(p):
+    if str(p.get("quotaState") or "") == "auth" or account_auth_broken(p):
+        return "login caiu"
+    picked = None
+    for win in allowed_windows(p):
+        if picked is None or float(win.get("percent") or 0) > float(picked.get("percent") or 0):
+            picked = win
+    if picked is not None:
+        title = picked.get("title") or picked.get("label") or ""
+        return f"{title} {round(float(picked.get('percent') or 0) * 100)}%"
+    balance = p.get("balance") or {}
+    if float(balance.get("funded") or 0) > 0:
+        remaining = float(balance.get("remaining") or 0)
+        currency = str(balance.get("currency") or "USD")
+        prefix = "$" if currency == "USD" else currency + " "
+        return f"{prefix}{remaining:.2f} restantes"
+    if account_quota_missing(p):
+        return "cota não veio"
+    return "sem leitura"
+
+
+def build_account_rows(providers):
+    rows = []
+    for p in providers:
+        if not p or p.get("providerId") == "all":
+            continue
+        if not radar_provider_allowed(p.get("providerId")):
+            continue
+        tier = radar_tier(p)
+        held = tier != "" or account_auth_broken(p) or str(p.get("quotaState") or "") == "auth"
+        if not held and allowed_windows(p):
+            held = True
+        balance = p.get("balance") or {}
+        if not held and float(balance.get("funded") or 0) > 0:
+            held = True
+        if not held:
+            continue
+        broken = account_auth_broken(p) or str(p.get("quotaState") or "") == "auth"
+        if not broken and not account_quota_missing(p):
+            continue
+        rows.append({
+            "providerId": p.get("providerId"),
+            "harness": p.get("chipName") or p.get("providerName"),
+            "tier": tier,
+            "reading": account_reading(p),
+            "action": "entrar" if broken else "reler",
+            "stale": True,
+        })
+    rows.sort(key=lambda row: str(row["harness"]))
     return rows
 
 
@@ -165,6 +251,8 @@ def build_byo_rows(providers):
         if windows:
             continue
         if balance and float(balance.get("funded") or 0) > 0:
+            continue
+        if radar_tier(p) or account_auth_broken(p) or str(p.get("quotaState") or "") == "auth":
             continue
         today = int(p.get("todayTotalTokens") or 0)
         harness = p.get("chipName") or p.get("providerName")
@@ -223,9 +311,9 @@ class RadarRankTests(unittest.TestCase):
         self.assertEqual(rows[0]["harness"], "Codex")
         self.assertEqual(rows[0]["title"], "Weekly")
         self.assertAlmostEqual(rows[0]["headroom"], 1.0)
-        self.assertIn("0% usado", rows[0]["why"])
+        self.assertTrue(rows[0]["why"].startswith("100% livre"))
         self.assertIn("reset em 7d", rows[0]["why"])
-        self.assertTrue(rows[0]["why"].startswith("Codex Weekly"))
+        self.assertEqual(rows[0]["pool"], "")
 
     def test_only_the_five_weeklies_surface(self):
         keys = self.keys(build_quota_rows(self.live_machine()))
@@ -314,6 +402,57 @@ class RadarRankTests(unittest.TestCase):
         ])
         self.assertEqual(rows[0]["harness"], "Codex")
         self.assertEqual(rows[1]["harness"], "Grok")
+
+    def test_named_plan_without_a_percentage_is_an_account_not_byo(self):
+        grok = {
+            "providerId": "grok",
+            "chipName": "Grok",
+            "tierLabel": "SuperGrok Heavy",
+            "quotaState": "unread",
+            "limits": [],
+            "todayTotalTokens": 1200,
+        }
+        claude = {
+            "providerId": "claude",
+            "chipName": "Claude",
+            "tierLabel": "Max 5x",
+            "limits": [{"title": "Weekly", "percent": 0.73, "resetMs": 6 * 3_600_000}],
+        }
+        self.assertEqual(build_byo_rows([grok, claude]), [])
+        self.assertEqual(build_quota_rows([grok]), [])
+        accounts = build_account_rows([grok, claude])
+        by_id = {row["providerId"]: row for row in accounts}
+        self.assertEqual(by_id["grok"]["reading"], "cota não veio")
+        self.assertTrue(by_id["grok"]["stale"])
+        self.assertEqual(by_id["grok"]["tier"], "SuperGrok Heavy")
+        self.assertEqual(by_id["grok"]["action"], "reler")
+        # A healthy account is already a ranked row; it gets no warning line.
+        self.assertNotIn("claude", by_id)
+
+    def test_pool_names_drop_the_word_weekly(self):
+        self.assertEqual(radar_pool("Weekly"), "")
+        self.assertEqual(radar_pool("Gemini Weekly"), "Gemini")
+        self.assertEqual(radar_pool("Other Models"), "Other Models")
+
+    def test_exhausted_row_says_when_it_comes_back(self):
+        self.assertEqual(radar_why(1.0, 3 * 86_400_000, True, True, False), "esgotado · volta em 3d 0h")
+        self.assertEqual(radar_why(0.05, 4 * 3_600_000, False, False, False), "95% livre · reset em 4h 0m")
+
+    def test_dropped_login_is_an_account_row(self):
+        claude = {
+            "providerId": "claude",
+            "chipName": "Claude",
+            "tierLabel": "Max 5x",
+            "quotaState": "auth",
+            "usageStatusText": "Sign-in expired",
+            "authHelpText": "Run `claude auth login` to restore authoritative usage.",
+            "limits": [],
+        }
+        rows = build_account_rows([claude])
+        self.assertEqual(rows[0]["reading"], "login caiu")
+        self.assertEqual(rows[0]["action"], "entrar")
+        self.assertTrue(rows[0]["stale"])
+        self.assertEqual(build_byo_rows([claude]), [])
 
 
 if __name__ == "__main__":
