@@ -465,6 +465,7 @@ Item {
       // across devices.
       limits: Array.isArray(record.limits) ? record.limits : [],
       tierLabel: String(record.tierLabel || ""),
+      quotaState: String(record.quotaState || ""),
       sources: synced && Array.isArray(stats.sources) ? stats.sources : (Array.isArray(record.sources) ? record.sources : []),
       usageOrigin: String(synced ? (stats.usageOrigin || record.usageOrigin || "") : (record.usageOrigin || "")),
       balance: balanceValue(record.balance),

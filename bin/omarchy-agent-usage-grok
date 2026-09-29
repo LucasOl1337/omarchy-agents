@@ -681,6 +681,11 @@ def parse_billing(payload: dict[str, Any]) -> dict[str, Any]:
     "usageStatusText": "",
     "authHelpText": "",
     "balance": None,
+    # ok: a window or a prepaid ledger came back.
+    # unread: the account is signed in and named a plan, but the weekly
+    # percentage was not in the reply. Unified billing started omitting
+    # creditUsagePercent; that is not the same as having no subscription.
+    "quotaState": "",
   }
   if not isinstance(payload, dict):
     return result
@@ -718,6 +723,10 @@ def parse_billing(payload: dict[str, Any]) -> dict[str, Any]:
     or payload.get("subscription_tier_display")
     or config.get("subscription_tier_display")
   ) or plan_label(str(payload.get("subscriptionTier") or config.get("subscriptionTier") or ""))
+  if result["limits"] or result.get("balance") is not None:
+    result["quotaState"] = "ok"
+  elif result["tierLabel"]:
+    result["quotaState"] = "unread"
   return result
 
 
@@ -728,6 +737,7 @@ def collect_limits() -> dict[str, Any]:
     "usageStatusText": "",
     "authHelpText": AUTH_HELP,
     "balance": None,
+    "quotaState": "",
   }
   grok = grok_command()
   if not grok:
@@ -783,6 +793,7 @@ def collect_limits() -> dict[str, Any]:
       if code in (401, 403) or any(marker in lowered for marker in auth_markers):
         result["usageStatusText"] = "Sign-in expired"
         result["authHelpText"] = AUTH_HELP
+        result["quotaState"] = "auth"
         return result
       result["usageStatusText"] = "Grok limits unavailable"
       result["authHelpText"] = text
@@ -846,6 +857,7 @@ def main() -> int:
     "usageStatusText": limits["usageStatusText"],
     "authHelpText": limits["authHelpText"],
     "limits": limits["limits"],
+    "quotaState": limits.get("quotaState") or "",
   }
   if limits.get("retryAdvised"):
     record["retryAdvised"] = True
