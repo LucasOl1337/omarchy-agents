@@ -1007,8 +1007,9 @@ Panel {
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(root.trackingExpanded ? Style.space(900) : Style.space(380))
     // Taller than the control panels on purpose: this one is a dashboard, and
-    // the whole point is reading limits and history without scrolling.
-    contentHeight: root.trackingExpanded ? panel.fittedContentHeight(Style.space(560), Style.space(600)) : panel.fittedContentHeight(column.implicitHeight, root.radarActive ? Style.space(520) : Style.space(640))
+    // the whole point is reading limits and history without scrolling. The
+    // Radar gets the same room: its ranking sits under the tab grid.
+    contentHeight: root.trackingExpanded ? panel.fittedContentHeight(Style.space(560), Style.space(600)) : panel.fittedContentHeight(column.implicitHeight, Style.space(640))
 
     PanelKeyCatcher {
       id: keyCatcher
