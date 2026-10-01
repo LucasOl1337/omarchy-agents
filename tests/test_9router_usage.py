@@ -4,7 +4,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -180,6 +180,31 @@ class NineRouterUsageTests(unittest.TestCase):
         self.assertEqual(sum(row["messageCount"] for row in stats["todayHours"]), 3000)
         self.assertEqual(stats["todayHours"][0]["sources"], {"Local": 1, "Railway": 9})
 
+    def test_gateways_sum_tokens_and_keep_each_origin(self):
+        def payload(prompt, completion):
+            stats = {
+                period: {
+                    "totalRequests": 1,
+                    "totalPromptTokens": prompt,
+                    "totalCompletionTokens": completion,
+                    "byModel": {"grok": {"rawModel": "grok-4.6", "promptTokens": prompt, "completionTokens": completion}},
+                }
+                for period in ("today", "7d", "30d", "all")
+            }
+            return {"stats": stats, "charts": {"7d": [{"label": "Oct 1", "tokens": prompt + completion, "cost": 0}]}}
+
+        stats, charts = ninerouter.combine_gateway_stats(
+            [("Hostinger", payload(10, 1)), ("Sherlocker", payload(5, 4))],
+            [("Railway", "sem senha de painel")],
+        )
+        self.assertEqual(stats["all"]["totalPromptTokens"], 15)
+        self.assertEqual(stats["all"]["totalCompletionTokens"], 5)
+        self.assertEqual(stats["all"]["byModel"]["Hostinger|grok-4.6"]["promptTokens"], 10)
+        self.assertEqual(stats["all"]["byModel"]["Sherlocker|grok-4.6"]["completionTokens"], 4)
+        self.assertEqual([source["label"] for source in stats["all"]["sources"]], ["Hostinger", "Sherlocker", "Railway"])
+        self.assertFalse(stats["all"]["sources"][-1]["available"])
+        self.assertEqual(charts["7d"][0]["tokens"], 20)
+
     def test_collect_falls_back_to_local_db_when_api_is_unavailable(self):
         now = datetime.now().astimezone().astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
         path = self._db([{"timestamp": now, "model": "local-only", "promptTokens": 5, "completionTokens": 1}])
@@ -201,6 +226,75 @@ class NineRouterUsageTests(unittest.TestCase):
         self.assertEqual(stats["todayTotalTokens"], 110)
         self.assertEqual(stats["recentDays"], [])
         self.assertTrue(any(error.startswith("chart/7d:") for error in stats["apiErrors"]))
+
+    def test_jcode_sessions_count_one_gateway_without_adding_cache(self):
+        now = datetime.now().astimezone()
+        today = now.date()
+        within_month = (now - timedelta(days=10)).isoformat()
+        older = (now - timedelta(days=40)).isoformat()
+
+        def session(provider, model, messages):
+            return {
+                "provider_key": provider,
+                "model": model,
+                "messages": [
+                    {"timestamp": stamp, "token_usage": usage}
+                    for stamp, usage in messages
+                ],
+            }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "railway.json").write_text(json.dumps(session(
+                "openai-compatible:9router-railway",
+                "grok-4.6",
+                [(now.isoformat(), {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 90, "prompt_tokens": 100})],
+            )))
+            (root / "railway-old.json").write_text(json.dumps(session(
+                "9router-railway",
+                "grok-4.6",
+                [
+                    (within_month, {"input_tokens": 50, "output_tokens": 1, "cache_read_input_tokens": 40}),
+                    (older, {"input_tokens": 7, "output_tokens": 1, "cache_read_input_tokens": 1}),
+                ],
+            )))
+            (root / "other.json").write_text(json.dumps(session(
+                "9router-sherlocker",
+                "grok-4.6",
+                [(now.isoformat(), {"input_tokens": 999, "output_tokens": 9, "cache_read_input_tokens": 1})],
+            )))
+            payload = ninerouter.jcode_provider_payload("9router-railway", root)
+
+        all_stats = payload["stats"]["all"]
+        self.assertEqual(all_stats["totalPromptTokens"], 157)
+        self.assertEqual(all_stats["totalCompletionTokens"], 7)
+        self.assertEqual(all_stats["totalCachedTokens"], 131)
+        self.assertEqual(all_stats["totalRequests"], 3)
+        self.assertEqual(payload["stats"]["7d"]["totalPromptTokens"], 100)
+        self.assertEqual(payload["stats"]["7d"]["totalCompletionTokens"], 5)
+        self.assertEqual(payload["stats"]["30d"]["totalPromptTokens"], 150)
+        self.assertEqual(payload["stats"]["today"]["byModel"]["grok-4.6"]["cachedTokens"], 90)
+        self.assertEqual(len(payload["charts"]["today"]), 24)
+        self.assertEqual(sum(point["tokens"] for point in payload["charts"]["today"]), 105)
+        self.assertEqual(len(payload["charts"]["7d"]), 7)
+        self.assertEqual(payload["charts"]["7d"][-1]["label"], ninerouter.chart_day_label(today))
+        self.assertEqual(payload["charts"]["7d"][-1]["tokens"], 105)
+        self.assertEqual(ninerouter.chart_day_label(datetime(2026, 9, 25).date()), "Sep 25")
+        self.assertEqual(ninerouter.chart_day_label(datetime(2026, 10, 1).date()), "Oct 1")
+
+        hostinger_chart = [
+            {"label": point["label"], "tokens": 10, "cost": 0}
+            for point in payload["charts"]["7d"]
+        ]
+        _stats, charts = ninerouter.combine_gateway_stats(
+            [
+                ("Hostinger", {"stats": {}, "charts": {"7d": hostinger_chart}}),
+                ("Railway", payload),
+            ],
+            [],
+        )
+        self.assertEqual(len(charts["7d"]), 7)
+        self.assertEqual(charts["7d"][-1]["tokens"], 115)
 
     def test_cli_token_matches_server_contract(self):
         with tempfile.TemporaryDirectory() as tmp:

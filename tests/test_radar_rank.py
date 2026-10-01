@@ -131,6 +131,7 @@ def build_quota_rows(providers, now_ms=0):
             rows.append({
                 "providerId": p.get("providerId"),
                 "harness": harness,
+                "account": account_label(p),
                 "tier": tier,
                 "title": win.get("title") or "Limit",
                 "kind": window_kind(win.get("title")),
@@ -158,7 +159,21 @@ def radar_tier(p):
     return (tier[:1].upper() + tier[1:]) if tier else ""
 
 
+def account_label(p):
+    email = str((p or {}).get("accountEmail") or "").strip()
+    name = str((p or {}).get("accountName") or "").strip()
+    if email and name and name.lower() not in email.lower():
+        return f"{name} · {email}"
+    return email or name
+
+
 def account_auth_broken(p):
+    if not p:
+        return False
+    if str(p.get("quotaState") or "") == "ok":
+        return False
+    if (p.get("limits") or []) and str(p.get("quotaState") or "") != "auth":
+        return False
     return bool(str(p.get("usageStatusText") or "")) and bool(str(p.get("authHelpText") or ""))
 
 
@@ -173,6 +188,8 @@ def allowed_windows(p):
 
 def account_quota_missing(p):
     if not p or p.get("providerId") == "all":
+        return False
+    if not radar_provider_allowed(p.get("providerId")):
         return False
     state = str(p.get("quotaState") or "")
     if state == "unread":
@@ -230,6 +247,7 @@ def build_account_rows(providers):
         rows.append({
             "providerId": p.get("providerId"),
             "harness": p.get("chipName") or p.get("providerName"),
+            "account": account_label(p),
             "tier": tier,
             "reading": account_reading(p),
             "action": "entrar" if broken else "reler",
@@ -453,6 +471,46 @@ class RadarRankTests(unittest.TestCase):
         self.assertEqual(rows[0]["action"], "entrar")
         self.assertTrue(rows[0]["stale"])
         self.assertEqual(build_byo_rows([claude]), [])
+
+    def test_codex_with_a_live_meter_is_not_a_dropped_login(self):
+        codex = {
+            "providerId": "codex",
+            "chipName": "Codex",
+            "tierLabel": "pro",
+            "quotaState": "ok",
+            "usageStatusText": "",
+            "authHelpText": "Run `codex login` to authenticate.",
+            "accountName": "Juliana",
+            "accountEmail": "ju@example.com",
+            "limits": [{"title": "Weekly", "percent": 0.55, "resetMs": 2 * 86_400_000}],
+        }
+        self.assertEqual(build_account_rows([codex]), [])
+        rows = build_quota_rows([codex])
+        self.assertEqual(rows[0]["why"].split(" · ")[0], "45% livre")
+        self.assertEqual(rows[0]["account"], "Juliana · ju@example.com")
+
+    def test_a_slow_probe_is_not_a_dropped_login(self):
+        codex = {
+            "providerId": "codex",
+            "chipName": "Codex",
+            "tierLabel": "pro",
+            "quotaState": "unread",
+            "usageStatusText": "Cota do Codex não respondeu",
+            "authHelpText": "",
+            "limits": [],
+        }
+        rows = build_account_rows([codex])
+        self.assertEqual(rows[0]["reading"], "cota não veio")
+        self.assertEqual(rows[0]["action"], "reler")
+
+    def test_a_gateway_label_is_not_a_missing_quota(self):
+        router = {
+            "providerId": "9router",
+            "chipName": "9Router",
+            "tierLabel": "Local",
+            "limits": [],
+        }
+        self.assertFalse(account_quota_missing(router))
 
 
 if __name__ == "__main__":

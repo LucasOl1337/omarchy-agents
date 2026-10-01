@@ -11,6 +11,7 @@ panel only ever reads the JSON this prints.
 """
 
 import argparse
+import base64
 import fcntl
 import hashlib
 import json
@@ -97,6 +98,7 @@ recent_dates = [(now - timedelta(days=offset)).strftime("%Y-%m-%d") for offset i
 recent = {day: {"date": day, "messageCount": 0} for day in recent_dates}
 today_tokens_by_model = {}
 model_usage = {}
+daily_models = {}
 today_sessions = set()
 active_days = set()
 
@@ -125,8 +127,13 @@ def add_usage(day, session_key, model, input_tokens, output_tokens, cache_read, 
   bucket["cacheReadInputTokens"] += cache_read
   bucket["cacheCreationInputTokens"] += cache_write
 
+  day_models = daily_models.setdefault(day, {})
+  day_models[model] = day_models.get(model, 0) + total
+
   if day in recent:
     recent[day]["messageCount"] += total
+    recent_models = recent[day].setdefault("tokensByModel", {})
+    recent_models[model] = recent_models.get(model, 0) + total
 
   if day == today:
     today_prompts += prompts
@@ -464,7 +471,7 @@ def read_cached_stats(cache_file, max_age_seconds):
   stats = cached.get("stats")
   if not isinstance(stats, dict):
     return None
-  if not all(key in stats for key in ("todayPrompts", "todayTotalTokens", "recentDays", "activeDates", "modelUsage")):
+  if not all(key in stats for key in ("todayPrompts", "todayTotalTokens", "recentDays", "activeDates", "modelUsage", "history")):
     return None
   return stats
 
@@ -492,6 +499,14 @@ def local_stats():
     "activeDays": len(active_days),
     "activeDates": sorted(active_days),
     "modelUsage": model_usage,
+    "history": [
+      {
+        "date": day,
+        "messageCount": sum(models.values()),
+        "tokensByModel": models,
+      }
+      for day, models in sorted(daily_models.items())
+    ],
   }
 
 
@@ -581,14 +596,120 @@ def limit_window(window):
   }
 
 
+def jwt_payload(token):
+  parts = str(token or "").split(".")
+  if len(parts) < 2 or not parts[1]:
+    return {}
+  raw = parts[1] + ("=" * (-len(parts[1]) % 4))
+  try:
+    body = json.loads(base64.urlsafe_b64decode(raw))
+  except Exception:
+    return {}
+  return body if isinstance(body, dict) else {}
+
+
+def account_identity():
+  """Who `codex login` actually is. The id_token is already on disk."""
+  found = {"accountEmail": "", "accountName": ""}
+  path = Path.home() / ".codex" / "auth.json"
+  try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+  except Exception:
+    return found
+  payload = jwt_payload(((data.get("tokens") or {}).get("id_token") or ""))
+  email = str(payload.get("email") or "").strip()
+  name = str(payload.get("name") or "").strip()
+  if email:
+    found["accountEmail"] = email
+  if name:
+    found["accountName"] = name
+  return found
+
+
+def rpc_error_text(message):
+  if not isinstance(message, dict) or not message.get("error"):
+    return ""
+  err = message.get("error")
+  if isinstance(err, dict):
+    return str(err.get("message") or err)
+  return str(err)
+
+
+def auth_failure(text):
+  lowered = str(text or "").lower()
+  markers = (
+    "unauthorized",
+    "unauthorised",
+    "unauthenticated",
+    "not logged",
+    "log in",
+    "login required",
+    "sign in",
+    "sign-in",
+    "401",
+    "403",
+  )
+  return any(marker in lowered for marker in markers)
+
+
+def usage_record_path():
+  state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+  return Path(state) / "omarchy" / "agents" / "usage" / "codex.json"
+
+
+def keep_last_limits(result):
+  """A slow app-server is not a logged-out account. Keep the last meter."""
+  if result.get("limits") or result.get("quotaState") == "auth":
+    return result
+  try:
+    previous = json.loads(usage_record_path().read_text(encoding="utf-8"))
+  except Exception:
+    return result
+  if not isinstance(previous, dict) or not previous.get("limits"):
+    return result
+  result["limits"] = previous.get("limits") or []
+  if not result.get("tierLabel"):
+    result["tierLabel"] = str(previous.get("tierLabel") or "")
+  result["quotaState"] = "ok"
+  result["usageStatusText"] = ""
+  result["authHelpText"] = ""
+  return result
+
+
+def mark_probe_failure(result, exc):
+  text = str(exc)
+  if auth_failure(text):
+    result["limits"] = []
+    result["quotaState"] = "auth"
+    result["usageStatusText"] = "Codex login expired"
+    result["authHelpText"] = AUTH_HELP
+    return result
+  result["limits"] = []
+  result["quotaState"] = "unread"
+  result["usageStatusText"] = "Cota do Codex não respondeu"
+  result["authHelpText"] = ""
+  return result
+
+
 def fetch_codex_rpc():
-  result = {"limits": [], "tierLabel": "", "usageStatusText": "", "authHelpText": AUTH_HELP}
+  result = {
+    "limits": [],
+    "tierLabel": "",
+    "usageStatusText": "",
+    "authHelpText": "",
+    "quotaState": "",
+    "accountEmail": "",
+    "accountName": "",
+  }
+  result.update(account_identity())
   codex = find_command("codex")
   if not codex:
     result["usageStatusText"] = "Codex unavailable"
     result["authHelpText"] = "codex not found in PATH"
+    result["quotaState"] = "auth"
     return result
 
+  proc = None
   try:
     proc = subprocess.Popen(
       [codex, "-s", "read-only", "-a", "on-request", "app-server"],
@@ -598,40 +719,53 @@ def fetch_codex_rpc():
       text=True,
       env=ENV,
     )
-  except Exception as exc:
-    result["usageStatusText"] = "Codex unavailable"
-    result["authHelpText"] = str(exc)
-    return result
-
-  try:
-    rpc_request(proc, 1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=8)
+    rpc_request(proc, 1, "initialize", {"clientInfo": {"name": "omarchy-agent-usage", "version": "1"}}, timeout=12)
     proc.stdin.write(json.dumps({"method": "initialized", "params": {}}) + "\n")
     proc.stdin.flush()
-    account_msg = rpc_request(proc, 2, "account/read", timeout=4)
-    limits_msg = rpc_request(proc, 3, "account/rateLimits/read", timeout=4)
+    account_msg = rpc_request(proc, 2, "account/read", timeout=10)
+    account_error = rpc_error_text(account_msg)
+    if account_error:
+      if auth_failure(account_error):
+        raise PermissionError(account_error)
+      raise RuntimeError(account_error)
+    limits_msg = rpc_request(proc, 3, "account/rateLimits/read", timeout=10)
+    limits_error = rpc_error_text(limits_msg)
+    if limits_error:
+      if auth_failure(limits_error):
+        raise PermissionError(limits_error)
+      raise RuntimeError(limits_error)
 
     account = (account_msg.get("result") or {}).get("account") or {}
     limits = (limits_msg.get("result") or {}).get("rateLimits") or {}
     plan = limits.get("planType") or account.get("planType") or account.get("type") or ""
     result["tierLabel"] = str(plan) if plan else ""
+    email = str(account.get("email") or account.get("accountEmail") or "").strip()
+    name = str(account.get("name") or account.get("displayName") or "").strip()
+    if email:
+      result["accountEmail"] = email
+    if name:
+      result["accountName"] = name
 
     for window in (limits.get("primary"), limits.get("secondary")):
       entry = limit_window(window)
       if entry:
         result["limits"].append(entry)
+    result["quotaState"] = "ok" if result["limits"] else ("unread" if result["tierLabel"] else "")
+    result["usageStatusText"] = ""
+    result["authHelpText"] = ""
   except Exception as exc:
-    result["usageStatusText"] = "Codex limits unavailable"
-    result["authHelpText"] = str(exc)
+    mark_probe_failure(result, exc)
   finally:
-    try:
-      proc.terminate()
-      proc.wait(timeout=1)
-    except Exception:
+    if proc is not None:
       try:
-        proc.kill()
+        proc.terminate()
+        proc.wait(timeout=1)
       except Exception:
-        pass
-  return result
+        try:
+          proc.kill()
+        except Exception:
+          pass
+  return keep_last_limits(result)
 
 
 def main():

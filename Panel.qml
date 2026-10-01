@@ -231,7 +231,23 @@ Panel {
   // Real auth trouble sets both strings. Claude and Codex keep a login hint
   // in authHelpText even while signed in, so the hint alone is not a drop.
   function accountAuthBroken(p) {
-    return !!p && String(p.usageStatusText || "") !== "" && String(p.authHelpText || "") !== ""
+    if (!p) return false
+    // A live meter means the account answered. A login hint left in
+    // authHelpText, or a probe that timed out after the last good read,
+    // is not a dropped login.
+    if (String(p.quotaState || "") === "ok") return false
+    var limits = p.limits || []
+    if (limits.length > 0 && String(p.quotaState || "") !== "auth") return false
+    return String(p.usageStatusText || "") !== "" && String(p.authHelpText || "") !== ""
+  }
+
+  function accountLabel(p) {
+    if (!p) return ""
+    var email = String(p.accountEmail || "").trim()
+    var name = String(p.accountName || "").trim()
+    if (email !== "" && name !== "" && email.toLowerCase().indexOf(name.toLowerCase()) < 0)
+      return name + " · " + email
+    return email !== "" ? email : name
   }
 
   // The account answered with a plan and no weekly percentage. quotaState
@@ -239,6 +255,9 @@ Panel {
   // thing on a record written before that field existed.
   function accountQuotaMissing(p) {
     if (!p || p.providerId === "all") return false
+    // "Cota não veio" is for a paid subscription whose percentage did not
+    // come back. A local harness or a gateway with a tier label is not that.
+    if (!radarProviderAllowed(p.providerId)) return false
     var state = String(p.quotaState || "")
     if (state === "unread") return true
     if (state === "ok" || state === "auth") return false
@@ -283,6 +302,7 @@ Panel {
         key: p.providerId,
         providerId: p.providerId,
         harness: radarHarness(p),
+        account: accountLabel(p),
         tier: tier,
         reading: accountReading(p),
         action: broken ? "entrar" : "reler",
@@ -435,6 +455,7 @@ Panel {
           key: p.providerId + ":" + win.title + ":" + w,
           providerId: p.providerId,
           harness: harness,
+          account: accountLabel(p),
           tier: tier,
           title: win.title,
           kind: radarWindowKind(win),
@@ -476,6 +497,7 @@ Panel {
         key: p.providerId,
         providerId: p.providerId,
         harness: radarHarness(p),
+        account: accountLabel(p),
         tier: radarTier(p),
         todayTokens: today,
         why: "sem cota" + (today > 0 ? " · " + usage.formatTokenCount(today) + " tokens hoje" : "")
@@ -753,11 +775,21 @@ Panel {
     if (p.providerId === "all") {
       var combined = ({})
       var list = root.providers || []
+      var routers = []
       for (var i = 0; i < list.length; i++) {
         var child = list[i]
-        if (!child || child.providerId === "all" || child.providerId === "9router") continue
+        if (!child || child.providerId === "all") continue
+        if (child.providerId === "9router") {
+          routers.push(child)
+          continue
+        }
         var part = periodModelMap(child, kind)
         for (var id in part) addTokenValue(combined, id, part[id])
+      }
+      for (var r = 0; r < routers.length; r++) {
+        var routerPart = periodModelMap(routers[r], kind)
+        for (var rid in routerPart)
+          addTokenValue(combined, usage.allModelKey(rid, combined), routerPart[rid])
       }
       return combined
     }
@@ -883,11 +915,14 @@ Panel {
       if (sourceBits.length > 0) return sourceBits.join(" · ")
     }
     if (provider && provider.providerId === "all") {
-      var tokens = 0
-      var rows = root.models
-      for (var i = 0; i < rows.length; i++) tokens += Number(rows[i].total || 0)
+      // The list on screen is capped. Sum the whole map, or a new model
+      // name makes the footer shrink even though nothing was deleted.
+      var tokens = usageMapTotal(periodModelMap(provider, root.period === "hour" ? "day" : root.period))
       var label = root.period === "hour" ? "today" : root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
-      return usage.formatTokenCount(tokens) + " tokens " + label + " · every harness"
+      var shown = root.models.length
+      var full = modelRowsFromUsage(periodModelMap(provider, root.period === "hour" ? "day" : root.period), 100000).length
+      var extra = full > shown ? (" · " + shown + " de " + full + " modelos") : ""
+      return usage.formatTokenCount(tokens) + " tokens " + label + " · every harness" + extra
     }
     if (provider && provider.syncEnabled && provider.syncDeviceCount > 0)
       return "Merged from " + provider.syncDeviceCount + " device" + (provider.syncDeviceCount === 1 ? "" : "s")

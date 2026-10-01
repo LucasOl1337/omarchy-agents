@@ -43,16 +43,63 @@ def period_start(kind, today):
     return ""
 
 
+_EFFORTS = ("none", "off", "auto", "ultra", "max", "xhigh", "high", "medium", "low", "minimal")
+
+
+def route_tail(model_id):
+    if "/" not in model_id:
+        return model_id
+    prefix, rest = model_id.split("/", 1)
+    if prefix.isascii() and prefix[:1].islower() and all(ch.islower() or ch.isdigit() for ch in prefix):
+        return rest
+    return model_id
+
+
+def bare_model_id(model_id):
+    raw = str(model_id or "")
+    if " · " in raw:
+        raw = raw.split(" · ", 1)[1]
+    raw = route_tail(raw)
+    for effort in _EFFORTS:
+        suffix = f"({effort})"
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)]
+            break
+    for effort in _EFFORTS:
+        suffix = f"-{effort}"
+        if raw.endswith(suffix):
+            raw = raw[: -len(suffix)]
+            break
+    return raw
+
+
+def all_model_key(model_id, existing):
+    bare = bare_model_id(model_id)
+    if bare and bare in existing:
+        return bare
+    raw = str(model_id or "")
+    without_origin = raw.split(" · ", 1)[1] if " · " in raw else raw
+    if without_origin in existing:
+        return without_origin
+    routed = route_tail(without_origin)
+    if routed in existing:
+        return routed
+    return bare or raw
+
+
 def period_model_map(p, kind, today):
     if not p:
         return {}
     if p.get("providerId") == "all":
         combined = {}
-        for child in p.get("providers") or []:
-            if not child or child.get("providerId") == "all":
-                continue
+        children = [child for child in (p.get("providers") or []) if child and child.get("providerId") != "all"]
+        ordered = [child for child in children if child.get("providerId") != "9router"]
+        ordered += [child for child in children if child.get("providerId") == "9router"]
+        for child in ordered:
+            from_router = child.get("providerId") == "9router"
             for mid, val in period_model_map(child, kind, today).items():
-                add_token(combined, mid, val)
+                key = all_model_key(mid, combined) if from_router else mid
+                add_token(combined, key, val)
         return combined
     if kind == "total":
         usage = {}
@@ -177,6 +224,75 @@ class PeriodModelMapTests(unittest.TestCase):
         }
         usage = period_model_map(stale, "day", self.today)
         self.assertEqual(usage, {})
+
+    def test_all_sums_9router_into_the_same_model_name(self):
+        claude = {
+            "providerId": "claude",
+            "modelUsage": {"claude-opus-5-5": {"inputTokens": 100}},
+            "periodTokensByModel": {"week": {"claude-opus-5-5": 10}},
+        }
+        codex = {
+            "providerId": "codex",
+            "modelUsage": {"gpt-6-astra": {"inputTokens": 50}, "gpt-6-sol": {"inputTokens": 7}},
+            "periodTokensByModel": {"week": {"gpt-6-sol": 4}},
+        }
+        cursor = {
+            "providerId": "cursor",
+            "modelUsage": {
+                "cursor-grok-4.6-high": {"inputTokens": 20},
+                "cursor-grok-4.6-xhigh": {"inputTokens": 30},
+            },
+        }
+        router = {
+            "providerId": "9router",
+            "modelUsage": {
+                "Sherlocker · claude-opus-5-5(high)": {"inputTokens": 40, "cacheReadInputTokens": 5},
+                "Railway · cc/claude-opus-5-5(high)": {"outputTokens": 8},
+                "Railway · cx/gpt-6-astra-xhigh": {"inputTokens": 15},
+                "Hostinger · cx/gpt-6-sol": {"inputTokens": 3},
+                "Railway · cu/cursor-grok-4.6-high": {"inputTokens": 2},
+                "Sherlocker · cx/gpt-6-luna(medium)": {"inputTokens": 9},
+            },
+            "periodTokensByModel": {
+                "week": {
+                    "Sherlocker · claude-opus-5-5(high)": 6,
+                    "Railway · cx/gpt-6-sol": 1,
+                },
+            },
+        }
+        total = period_model_map(
+            {"providerId": "all", "providers": [router, claude, codex, cursor]},
+            "total",
+            self.today,
+        )
+        self.assertEqual(bucket_total(total["claude-opus-5-5"]), 153)
+        self.assertEqual(bucket_total(total["gpt-6-astra"]), 65)
+        self.assertEqual(bucket_total(total["gpt-6-sol"]), 10)
+        self.assertEqual(bucket_total(total["cursor-grok-4.6-high"]), 22)
+        self.assertEqual(bucket_total(total["cursor-grok-4.6-xhigh"]), 30)
+        self.assertEqual(bucket_total(total["gpt-6-luna"]), 9)
+        self.assertNotIn("Sherlocker · claude-opus-5-5(high)", total)
+        week = period_model_map(
+            {"providerId": "all", "providers": [claude, router, codex]},
+            "week",
+            self.today,
+        )
+        self.assertEqual(bucket_total(week["claude-opus-5-5"]), 16)
+        self.assertEqual(bucket_total(week["gpt-6-sol"]), 5)
+
+    def test_effort_suffix_joins_the_bare_model_when_that_row_exists(self):
+        usage = period_model_map({
+            "providerId": "all",
+            "providers": [
+                {"providerId": "grok", "modelUsage": {"gpt-5.6-sol(medium)": {"inputTokens": 1}}},
+                {"providerId": "codex", "modelUsage": {"gpt-5.6-sol": {"inputTokens": 100}}},
+                {"providerId": "9router", "modelUsage": {
+                    "Railway · cx/gpt-5.6-sol(medium)": {"inputTokens": 40},
+                }},
+            ],
+        }, "total", self.today)
+        self.assertEqual(bucket_total(usage["gpt-5.6-sol"]), 140)
+        self.assertEqual(bucket_total(usage["gpt-5.6-sol(medium)"]), 1)
 
     def test_federated_explicit_period_keeps_origins_separate(self):
         router = {

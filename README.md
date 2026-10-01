@@ -9,7 +9,7 @@ This is the panel that runs on my Omarchy desktop. Stock `omarchy.agents` only c
 - **Antigravity** and **Hermes** collectors
 - **Projects** and **live** views: local sessions, compact project rows, on-demand message previews
 - **Radar** tab: ranks live quotas so you know which subscription to burn next (headroom, reset countdown, exhausted pools called out)
-- Grok / OpenCode / 9Router tracking when those session files exist on disk. The **9Router** tab is the local gateway: every HTTP call in `~/.9router`, including DailyWork GPT 5.6 Sol. All stays harness-only so Grok/Cursor are not counted twice. Tempo real **Todos** includes 9Router HTTP clients and still hides 9Router rows that only proxy a harness already indexed (Grok CLI).
+- Grok / OpenCode / 9Router tracking when those session files exist on disk. The **9Router** tab keeps each gateway on its own row. All adds that usage onto the harness model with the same id, after dropping the gateway label, the `cc/`/`cx/` route and the effort suffix. Tempo real **Todos** includes 9Router HTTP clients and still hides 9Router rows that only proxy a harness already indexed (Grok CLI).
 
 ![Radar ranking five subscriptions by weekly headroom](screenshots/radar.png)
 

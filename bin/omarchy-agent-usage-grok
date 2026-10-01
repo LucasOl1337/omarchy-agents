@@ -52,6 +52,39 @@ def grok_home() -> Path:
   return expand_path(os.environ.get("GROK_HOME") or "~/.grok")
 
 
+def read_usage_record(name: str) -> dict[str, Any]:
+  state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+  path = Path(state) / "omarchy" / "agents" / "usage" / name
+  try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return {}
+  return data if isinstance(data, dict) else {}
+
+
+def local_account() -> dict[str, str]:
+  """Email and name from the local Grok auth file. Tokens stay out of the record."""
+  found = {"accountEmail": "", "accountName": ""}
+  path = grok_home() / "auth.json"
+  try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, ValueError):
+    return found
+  entries = data.values() if isinstance(data, dict) else []
+  for entry in entries:
+    if not isinstance(entry, dict):
+      continue
+    email = str(entry.get("email") or "").strip()
+    name = str(entry.get("first_name") or entry.get("name") or "").strip()
+    if email or name:
+      if email:
+        found["accountEmail"] = email
+      if name:
+        found["accountName"] = name
+      break
+  return found
+
+
 def opencode_db_path() -> Path:
   return Path(os.environ.get("XDG_DATA_HOME") or (Path.home() / ".local" / "share")) / "opencode" / "opencode.db"
 
@@ -809,14 +842,25 @@ def collect_limits() -> dict[str, Any]:
     result.update(parsed)
     result["authHelpText"] = ""
     return result
-  except TimeoutError as exc:
-    result["usageStatusText"] = "Grok limits unavailable"
-    result["authHelpText"] = f"Grok billing timed out ({exc}). Local Grok stats are still shown."
+  except TimeoutError:
+    # A slow billing probe is not a signed-out account. Leaving the login
+    # hint in place made the radar say "login caiu" over a healthy plan.
+    result["usageStatusText"] = "Cota do Grok não respondeu"
+    result["authHelpText"] = ""
+    result["quotaState"] = "unread"
     result["retryAdvised"] = True
     return result
   except Exception as exc:
-    result["usageStatusText"] = "Grok limits unavailable"
-    result["authHelpText"] = str(exc)
+    text = str(exc)
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("unauthorized", "unauthenticated", "not logged", "log in", "sign-in", "sign in")):
+      result["usageStatusText"] = "Sign-in expired"
+      result["authHelpText"] = AUTH_HELP
+      result["quotaState"] = "auth"
+    else:
+      result["usageStatusText"] = "Cota do Grok não respondeu"
+      result["authHelpText"] = ""
+      result["quotaState"] = "unread"
     result["retryAdvised"] = True
     return result
   finally:
@@ -863,6 +907,18 @@ def main() -> int:
     record["retryAdvised"] = True
   if limits.get("balance") is not None:
     record["balance"] = limits["balance"]
+  record.update(local_account())
+  if not has_limits and record.get("quotaState") != "auth":
+    previous = read_usage_record("grok.json")
+    if previous.get("limits"):
+      record["limits"] = previous.get("limits") or []
+      if not record.get("tierLabel"):
+        record["tierLabel"] = str(previous.get("tierLabel") or "")
+      record["quotaState"] = "ok"
+      record["usageStatusText"] = ""
+      record["authHelpText"] = ""
+      if previous.get("balance") is not None and record.get("balance") is None:
+        record["balance"] = previous.get("balance")
   record.update(stats)
   print(json.dumps(record, separators=(",", ":"), sort_keys=True))
   return 0

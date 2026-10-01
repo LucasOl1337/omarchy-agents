@@ -10,11 +10,14 @@ when the gateway is unavailable. No credential is written to the usage record.
 from __future__ import annotations
 
 import argparse
+import calendar
 import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -394,23 +397,581 @@ def collect_db(path: Path | None = None) -> dict[str, Any]:
         "scope": "device",
     }
 
-def collect(path: Path | None = None, fetch=api_json) -> dict[str, Any]:
+# The three gateways Jcode actually sends traffic to. Each keeps its own
+# usage database. The tab is their sum, not the stale sqlite on this PC.
+GATEWAYS = (
+    ("Hostinger", "http://100.64.49.65:20128", "ssh"),
+    ("Railway", "https://9router-production-056a.up.railway.app", "password"),
+    ("Sherlocker", "https://ai-router.sherlocker.dev", "password"),
+)
+GATEWAY_CACHE_SECONDS = 600
+STATS_PERIODS = ("today", "7d", "30d", "all")
+CHART_PERIODS = ("today", "7d", "30d")
+
+HOSTINGER_JS = r"""
+const fs = require("fs");
+const crypto = require("crypto");
+const http = require("http");
+const id = fs.readFileSync("/app/data/machine-id", "utf8").trim();
+const secret = fs.readFileSync("/app/data/auth/cli-secret", "utf8").trim();
+const token = crypto.createHash("sha256").update(id + "9r-cli-auth" + secret).digest("hex").slice(0, 16);
+function get(path) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({host: "127.0.0.1", port: 20128, path, headers: {"x-9r-cli-token": token, accept: "application/json"}}, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => {
+        const body = Buffer.concat(chunks).toString("utf8");
+        if (res.statusCode !== 200) reject(new Error("HTTP " + res.statusCode));
+        else resolve(JSON.parse(body));
+      });
+    });
+    req.on("error", reject);
+    req.setTimeout(20000, () => req.destroy(new Error("timeout")));
+    req.end();
+  });
+}
+(async () => {
+  const stats = {};
+  const charts = {};
+  for (const period of ["today", "7d", "30d", "all"]) stats[period] = await get("/api/usage/stats?period=" + period);
+  for (const period of ["today", "7d", "30d"]) charts[period] = await get("/api/usage/chart?period=" + period);
+  process.stdout.write(JSON.stringify({stats, charts}));
+})().catch((error) => {
+  console.error(error.message);
+  process.exit(1);
+});
+"""
+
+
+def gateway_cache_path() -> Path:
+    state = os.environ.get("XDG_STATE_HOME") or str(Path.home() / ".local" / "state")
+    return Path(state) / "omarchy" / "agents" / "cache" / "9router-gateways.json"
+
+
+def blank_stats() -> dict[str, Any]:
+    return {
+        "totalRequests": 0,
+        "totalPromptTokens": 0,
+        "totalCompletionTokens": 0,
+        "totalCachedTokens": 0,
+        "totalCost": 0.0,
+        "byModel": {},
+        "sources": [],
+    }
+
+
+def add_model(models: dict[str, dict[str, Any]], origin: str, key: str, row: dict[str, Any]) -> None:
+    model = str(row.get("rawModel") or key.split("|")[-1] or "unknown")
+    merged = models.setdefault(f"{origin}|{model}", {
+        "rawModel": model,
+        "origin": origin,
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "cachedTokens": 0,
+        "requests": 0,
+        "cost": 0.0,
+    })
+    for field in ("promptTokens", "completionTokens", "cachedTokens", "requests"):
+        merged[field] = number(merged.get(field)) + number(row.get(field))
+    merged["cost"] = float(merged.get("cost") or 0) + money(row.get("cost"))
+
+
+def combine_gateway_stats(
+    payloads: list[tuple[str, dict[str, Any]]],
+    errors: list[tuple[str, str]],
+) -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    """Sum Hostinger, Railway and Sherlocker without dropping a model's origin."""
+    stats: dict[str, dict[str, Any]] = {}
+    for period in STATS_PERIODS:
+        combined = blank_stats()
+        for label, payload in payloads:
+            raw = ((payload.get("stats") or {}).get(period) or {})
+            if not isinstance(raw, dict):
+                continue
+            combined["totalRequests"] += number(raw.get("totalRequests"))
+            combined["totalPromptTokens"] += number(raw.get("totalPromptTokens"))
+            combined["totalCompletionTokens"] += number(raw.get("totalCompletionTokens"))
+            combined["totalCachedTokens"] += number(raw.get("totalCachedTokens"))
+            combined["totalCost"] += money(raw.get("totalCost"))
+            for key, row in (raw.get("byModel") or {}).items():
+                if isinstance(row, dict):
+                    add_model(combined["byModel"], label, str(key), row)
+            combined["sources"].append({
+                "label": label,
+                "available": True,
+                "requests": number(raw.get("totalRequests")),
+                "tokens": number(raw.get("totalPromptTokens")) + number(raw.get("totalCompletionTokens")),
+                "error": "",
+            })
+        for label, error in errors:
+            combined["sources"].append({
+                "label": label,
+                "available": False,
+                "requests": 0,
+                "tokens": 0,
+                "error": error,
+            })
+        stats[period] = combined
+    charts: dict[str, list[dict[str, Any]]] = {}
+    for period in CHART_PERIODS:
+        order: list[str] = []
+        points: dict[str, dict[str, Any]] = {}
+        for _label, payload in payloads:
+            for point in ((payload.get("charts") or {}).get(period) or []):
+                if not isinstance(point, dict):
+                    continue
+                label = str(point.get("label") or "")
+                if label not in points:
+                    order.append(label)
+                    points[label] = {"label": label, "tokens": 0, "cost": 0.0}
+                points[label]["tokens"] += number(point.get("tokens"))
+                points[label]["cost"] += money(point.get("cost"))
+        ordered = [points[label] for label in order]
+        if period in ("7d", "30d"):
+            today = datetime.now().astimezone().date()
+            dated = []
+            for label in order:
+                parsed = chart_label_date(label, today)
+                if parsed is None:
+                    dated = []
+                    break
+                dated.append((parsed, points[label]))
+            if dated:
+                dated.sort(key=lambda item: item[0])
+                ordered = [point for _parsed, point in dated]
+        charts[period] = ordered
+    return stats, charts
+
+
+def jcode_api_key(label: str) -> str:
+    """The same key Jcode already uses for this gateway. Never log the value."""
+    slug = label.lower()
+    wanted = f"JCODE_9ROUTER_{label.upper()}_API_KEY"
+    paths = (
+        Path.home() / ".config/jcode" / f"provider-9router-{slug}.env",
+        Path.home() / ".jcode" / f"provider-9router-{slug}.env",
+    )
+    for path in paths:
+        if not path.is_file():
+            continue
+        fallback = ""
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if not line.strip() or line.strip().startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip('"').strip("'")
+            if not value:
+                continue
+            if key.strip() == wanted:
+                return value
+            if "API_KEY" in key and not fallback:
+                fallback = value
+        if fallback:
+            return fallback
+    return ""
+
+
+def fetch_with_jcode_key(base: str, key: str) -> dict[str, Any]:
+    from urllib.request import Request
+    headers = {
+        "Authorization": "Bearer " + key,
+        "Accept": "application/json",
+        "User-Agent": "omarchy-agents",
+    }
+
+    def get(path: str) -> Any:
+        request = Request(base + path, headers=headers)
+        with urlopen(request, timeout=30) as response:
+            body = response.read()
+        if not body or body[:1] not in (b"{", b"["):
+            raise RuntimeError("resposta não é JSON")
+        return json.loads(body)
+
+    prefix = ""
+    last = "chave do jcode não leu o uso"
+    for candidate in ("/api/v1/usage", "/api/usage", "/v1/usage"):
+        try:
+            get(f"{candidate}/stats?period=all")
+        except HTTPError as error:
+            last = f"usage HTTP {error.code}"
+            continue
+        except (URLError, TimeoutError, ValueError):
+            last = "usage sem resposta"
+            continue
+        prefix = candidate
+        break
+    if not prefix:
+        raise RuntimeError(last)
+    stats = {period: get(f"{prefix}/stats?period={period}") for period in STATS_PERIODS}
+    charts: dict[str, list[Any]] = {}
+    for period in CHART_PERIODS:
+        try:
+            chart = get(f"{prefix}/chart?period={period}")
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            chart = []
+        charts[period] = chart if isinstance(chart, list) else []
+    return {"stats": stats, "charts": charts}
+
+
+def session_when(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.astimezone()
+    return parsed.astimezone()
+
+
+def session_day(value: Any) -> str:
+    parsed = session_when(value)
+    if parsed is not None:
+        return parsed.date().isoformat()
+    text = str(value or "")
+    return text[:10] if len(text) >= 10 else ""
+
+
+def chart_day_label(day: date) -> str:
+    """Same English label the 9Router chart route emits, so days sum instead of stacking."""
+    return f"{calendar.month_abbr[day.month]} {day.day}"
+
+
+def chart_label_date(label: str, today: date) -> date | None:
+    text = str(label or "").strip()
+    if len(text) >= 10 and text[4:5] == "-" and text[7:8] == "-":
+        try:
+            return date.fromisoformat(text[:10])
+        except ValueError:
+            return None
+    parts = text.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    month = {name: index for index, name in enumerate(calendar.month_abbr) if name}.get(parts[0])
+    if not month:
+        return None
+    try:
+        parsed = date(today.year, month, int(parts[1]))
+    except ValueError:
+        return None
+    if parsed > today + timedelta(days=1):
+        parsed = parsed.replace(year=today.year - 1)
+    return parsed
+
+
+def jcode_provider_payload(needle: str, root: Path | None = None) -> dict[str, Any]:
+    """Token totals already stored on this machine's Jcode sessions for one profile.
+
+    The gateway usage route rejects the same API key Jcode uses to chat. On these
+    sessions prompt_tokens equals input_tokens, and cache_read sits inside that
+    prompt (almost always a subset). Cache is kept for the tooltip and is not
+    added on top of the prompt.
+    """
+    base = root or (Path.home() / ".jcode" / "sessions")
+    now = datetime.now().astimezone()
+    today = now.date()
+    daily: dict[str, dict[str, int]] = {}
+    hourly = [0] * 24
+    if base.is_dir():
+        marker = needle.encode()
+        for path in base.glob("*.json"):
+            try:
+                raw = path.read_bytes()
+            except OSError:
+                continue
+            if marker not in raw or b'"token_usage"' not in raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except ValueError:
+                continue
+            if needle not in str(data.get("provider_key") or ""):
+                continue
+            model = str(data.get("model") or "unknown")
+            for message in data.get("messages") or []:
+                if not isinstance(message, dict):
+                    continue
+                usage = message.get("token_usage")
+                if not isinstance(usage, dict):
+                    continue
+                prompt = number(usage.get("input_tokens") or usage.get("prompt_tokens"))
+                completion = number(usage.get("output_tokens") or usage.get("completion_tokens"))
+                cached = number(usage.get("cache_read_input_tokens") or usage.get("cache_read_tokens"))
+                if prompt + completion <= 0:
+                    continue
+                when = session_when(message.get("timestamp"))
+                day = when.date().isoformat() if when else today.isoformat()
+                bucket = daily.setdefault(day, {})
+                row = bucket.setdefault(model, {"promptTokens": 0, "completionTokens": 0, "cachedTokens": 0, "requests": 0})
+                row["promptTokens"] += prompt
+                row["completionTokens"] += completion
+                row["cachedTokens"] += cached
+                row["requests"] += 1
+                if when and when.date() == today:
+                    hourly[when.hour] += prompt + completion
+
+    def stats_for(start: date | None) -> dict[str, Any]:
+        merged: dict[str, dict[str, int]] = {}
+        for day, models in daily.items():
+            if start is not None and day < start.isoformat():
+                continue
+            for model, row in models.items():
+                target = merged.setdefault(model, {"promptTokens": 0, "completionTokens": 0, "cachedTokens": 0, "requests": 0})
+                for field in target:
+                    target[field] += row[field]
+        return {
+            "totalRequests": sum(row["requests"] for row in merged.values()),
+            "totalPromptTokens": sum(row["promptTokens"] for row in merged.values()),
+            "totalCompletionTokens": sum(row["completionTokens"] for row in merged.values()),
+            "totalCachedTokens": sum(row["cachedTokens"] for row in merged.values()),
+            "totalCost": 0,
+            "byModel": {model: {"rawModel": model, **row} for model, row in merged.items()},
+        }
+
+    def chart_for(days: int) -> list[dict[str, Any]]:
+        start = today - timedelta(days=days - 1)
+        points = []
+        for offset in range(days):
+            day = start + timedelta(days=offset)
+            models = daily.get(day.isoformat()) or {}
+            tokens = sum(row["promptTokens"] + row["completionTokens"] for row in models.values())
+            points.append({"label": chart_day_label(day), "tokens": tokens, "cost": 0})
+        return points
+
+    week_start = today - timedelta(days=6)
+    month_start = today - timedelta(days=29)
+    return {
+        "stats": {
+            "all": stats_for(None),
+            "30d": stats_for(month_start),
+            "7d": stats_for(week_start),
+            "today": stats_for(today),
+        },
+        "charts": {
+            "today": [{"label": f"{hour:02d}:00", "tokens": hourly[hour], "cost": 0} for hour in range(24)],
+            "7d": chart_for(7),
+            "30d": chart_for(30),
+        },
+    }
+
+
+def fetch_hostinger() -> dict[str, Any]:
+    proc = subprocess.run(
+        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=12", "sennin-kvm",
+         "docker", "exec", "-i", "9router", "node"],
+        input=HOSTINGER_JS.encode(),
+        capture_output=True,
+        timeout=70,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip().splitlines()
+        raise RuntimeError(detail[-1] if detail else "ssh do Hostinger falhou")
+    payload = json.loads(proc.stdout)
+    if not isinstance(payload, dict) or "stats" not in payload:
+        raise RuntimeError("resposta do Hostinger sem stats")
+    return payload
+
+
+def dashboard_password(label: str) -> str:
+    if label == "Railway":
+        return os.environ.get("NINEROUTER_RAILWAY_DASHBOARD_PASSWORD") or ""
+    if label == "Sherlocker":
+        configured = os.environ.get("NINEROUTER_SHERLOCKER_DASHBOARD_PASSWORD") or ""
+        if configured:
+            return configured
+        try:
+            proc = subprocess.run(
+                ["cofre", "teiax", "pega", "9router"],
+                capture_output=True,
+                timeout=180,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return ""
+        if proc.returncode != 0:
+            return ""
+        return proc.stdout.decode("utf-8", "replace").strip()
+    return ""
+
+
+def fetch_dashboard(base: str, password: str) -> dict[str, Any]:
+    if not password:
+        raise RuntimeError("sem senha de painel")
+    from urllib.request import Request
+    login = Request(
+        base + "/api/auth/login",
+        data=json.dumps({"password": password}).encode(),
+        headers={"Content-Type": "application/json", "Accept": "application/json", "User-Agent": "omarchy-agents"},
+    )
+    try:
+        with urlopen(login, timeout=20) as response:
+            cookie = response.headers.get("Set-Cookie") or ""
+    except (HTTPError, URLError, TimeoutError) as error:
+        code = getattr(error, "code", None)
+        raise RuntimeError(f"login HTTP {code}" if code else "login falhou") from error
+    if "auth_token=" not in cookie:
+        raise RuntimeError("login sem sessão")
+    token = cookie.split("auth_token=", 1)[1].split(";", 1)[0]
+
+    def get(path: str) -> Any:
+        request = Request(
+            base + path,
+            headers={"Cookie": "auth_token=" + token, "Accept": "application/json", "User-Agent": "omarchy-agents"},
+        )
+        with urlopen(request, timeout=30) as response:
+            return json.load(response)
+
+    stats = {period: get(f"/api/usage/stats?period={period}") for period in STATS_PERIODS}
+    charts = {period: get(f"/api/usage/chart?period={period}") for period in CHART_PERIODS}
+    return {"stats": stats, "charts": charts}
+
+
+def load_gateway_cache() -> dict[str, Any] | None:
+    try:
+        data = json.loads(gateway_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    if time.time() - float(data.get("fetchedAt") or 0) > GATEWAY_CACHE_SECONDS:
+        return None
+    gateways = data.get("gateways")
+    return gateways if isinstance(gateways, dict) else None
+
+
+def save_gateway_cache(gateways: dict[str, Any]) -> None:
+    path = gateway_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"fetchedAt": time.time(), "gateways": gateways}
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    path.chmod(0o600)
+
+
+def read_gateways(*, force: bool = False) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str]]]:
+    cached = None if force else load_gateway_cache()
+    if cached is None:
+        cached = {}
+        for label, base, kind in GATEWAYS:
+            key_error = ""
+            try:
+                api_key = jcode_api_key(label)
+                if api_key:
+                    cached[label] = {"ok": True, "payload": fetch_with_jcode_key(base, api_key)}
+                    continue
+                key_error = "jcode sem chave desse gateway"
+            except (RuntimeError, OSError, ValueError) as error:
+                key_error = str(error).splitlines()[-1][:180]
+            try:
+                if kind == "ssh":
+                    cached[label] = {"ok": True, "payload": fetch_hostinger()}
+                elif label == "Railway":
+                    # The usage API refuses the Jcode key. Sessions that key
+                    # already wrote are the Railway total this PC can prove.
+                    payload = jcode_provider_payload("9router-railway")
+                    all_stats = ((payload.get("stats") or {}).get("all") or {})
+                    proved = number(all_stats.get("totalPromptTokens")) + number(all_stats.get("totalCompletionTokens"))
+                    if proved > 0:
+                        payload["ledger"] = "jcode"
+                        cached[label] = {"ok": True, "payload": payload}
+                    else:
+                        cached[label] = {"ok": False, "error": key_error or "jcode deste PC sem uso desse gateway"}
+                else:
+                    password = dashboard_password(label)
+                    if not password:
+                        cached[label] = {"ok": False, "error": key_error or "sem senha de painel"}
+                        continue
+                    cached[label] = {"ok": True, "payload": fetch_dashboard(base, password)}
+            except (RuntimeError, OSError, ValueError, subprocess.TimeoutExpired) as error:
+                fallback = str(error).splitlines()[-1][:180]
+                cached[label] = {"ok": False, "error": key_error or fallback}
+        save_gateway_cache(cached)
+    payloads: list[tuple[str, dict[str, Any]]] = []
+    errors: list[tuple[str, str]] = []
+    for label, _base, _kind in GATEWAYS:
+        entry = cached.get(label) or {}
+        if entry.get("ok") and isinstance(entry.get("payload"), dict):
+            payloads.append((label, entry["payload"]))
+        else:
+            errors.append((label, str(entry.get("error") or "sem leitura")))
+    return payloads, errors
+
+
+def collect_gateways(*, force: bool = False) -> dict[str, Any]:
+    payloads, errors = read_gateways(force=force)
+    if not payloads:
+        stats = collect_db()
+        stats["sources"] = list(stats.get("sources") or []) + [
+            {"label": label, "available": False, "requests": 0, "tokens": 0, "error": error}
+            for label, error in errors
+        ]
+        return stats
+    stats_by_period, charts = combine_gateway_stats(payloads, errors)
+
+    def fetch(path: str, params: dict[str, Any] | None = None) -> Any:
+        period = str((params or {}).get("period") or "all")
+        if path.endswith("/stats"):
+            found = stats_by_period.get(period)
+            if not isinstance(found, dict):
+                raise RuntimeError(f"período {period} ausente")
+            return found
+        if path.endswith("/chart"):
+            return charts.get(period) or []
+        raise RuntimeError(f"rota inesperada {path}")
+
+    stats = collect_api(fetch)
+    stats["usageOrigin"] = "gateways"
+    # The footer shows this list on every period. All-time is the sum the
+    # tab is for; today's slice would hide a gateway that was quiet today.
+    stats["sources"] = list(stats_by_period.get("all", {}).get("sources") or stats.get("sources") or [])
+    local = [label for label, payload in payloads if payload.get("ledger") == "jcode"]
+    if local:
+        stats["localLedgers"] = local
+    return stats
+
+
+def collect(path: Path | None = None, fetch=api_json, *, force: bool = False) -> dict[str, Any]:
     if path is not None:
         return collect_db(path)
-    try:
-        return collect_api(fetch)
-    except RuntimeError:
-        return collect_db()
+    # Tests inject a fetch. The three live gateways are only for the real CLI.
+    if fetch is not api_json:
+        try:
+            return collect_api(fetch)
+        except RuntimeError:
+            return collect_db()
+    return collect_gateways(force=force)
 
 
 def status_line(stats: dict[str, Any]) -> str:
     today_cost = float(stats.get("todayCost") or 0)
     total_cost = float(stats.get("totalCost") or 0)
     if today_cost > 0:
-        return f"US$ {today_cost:.2f} spent today"
-    if total_cost > 0:
-        return f"US$ {total_cost:.2f} recorded"
-    return ""
+        text = f"US$ {today_cost:.2f} spent today"
+    elif total_cost > 0:
+        text = f"US$ {total_cost:.2f} recorded"
+    else:
+        text = ""
+    newest = ""
+    for row in stats.get("history") or []:
+        if isinstance(row, dict):
+            newest = max(newest, str(row.get("date") or ""))
+    today = datetime.now().astimezone().date().isoformat()
+    if newest and newest < today and stats.get("usageOrigin") == "local-db":
+        text = (text + f" · ledger local até {newest}").strip(" ·")
+    blocked = [
+        str(source.get("label"))
+        for source in stats.get("sources") or []
+        if isinstance(source, dict) and source.get("available") is False and source.get("label")
+    ]
+    if blocked:
+        text = (text + " · " + ", ".join(blocked) + " sem acesso").strip(" ·")
+    local = [str(label) for label in (stats.get("localLedgers") or []) if label]
+    if local:
+        text = (text + " · " + ", ".join(local) + " pelo jcode deste PC").strip(" ·")
+    return text
 
 def source_status(stats: dict[str, Any]) -> str:
     available = [str(source.get("label")) for source in stats.get("sources", []) if source.get("available")]
@@ -421,9 +982,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Print the 9Router usage record as JSON")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--limits-only", action="store_true")
-    parser.parse_args()
+    args = parser.parse_args()
 
-    stats = collect()
+    stats = collect(force=args.force)
     ready = stats["totalPrompts"] > 0 or stats["totalSessions"] > 0 or bool(stats["modelUsage"])
     record = {
         "schemaVersion": 1,

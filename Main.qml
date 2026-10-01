@@ -277,7 +277,9 @@ Item {
       out.push({
         date: date,
         messageCount: numberValue(day.messageCount),
-        tokensByModel: date === today ? todayModels : ({}),
+        tokensByModel: (day.tokensByModel && Object.keys(day.tokensByModel).length > 0)
+          ? day.tokensByModel
+          : (date === today ? todayModels : ({})),
         prompts: date === today ? numberValue(record.todayPrompts) : 0,
         sessions: date === today ? numberValue(record.todaySessions) : 0
       })
@@ -285,13 +287,56 @@ Item {
     return out
   }
 
-  function addModelTotals(target, source) {
+  function addModelTotals(target, source, canonicalize) {
     if (!source) return
     for (var key in source) {
+      var id = canonicalize ? allModelKey(key, target) : key
       var value = source[key]
-      if (!target[key] || typeof target[key] !== "object") target[key] = emptyTokenBucket()
-      if (value && typeof value === "object") combineObjectNumbers(true, target[key], value)
-      else target[key].inputTokens = numberValue(target[key].inputTokens) + numberValue(value)
+      if (!target[id] || typeof target[id] !== "object") target[id] = emptyTokenBucket()
+      if (value && typeof value === "object") combineObjectNumbers(true, target[id], value)
+      else target[id].inputTokens = numberValue(target[id].inputTokens) + numberValue(value)
+    }
+  }
+
+  // 9Router labels the gateway and the effort (`Sherlocker · cc/claude-opus-5-5(high)`).
+  // All folds that into the harness row with the same model id.
+  function routeTail(id) {
+    var slash = id.indexOf("/")
+    if (slash <= 0) return id
+    var prefix = id.slice(0, slash)
+    if (!/^[a-z][a-z0-9]*$/.test(prefix)) return id
+    return id.slice(slash + 1)
+  }
+
+  function bareModelId(id) {
+    var raw = String(id || "")
+    var sep = raw.indexOf(" · ")
+    if (sep >= 0) raw = raw.slice(sep + 3)
+    raw = routeTail(raw)
+    raw = raw.replace(/\((none|off|auto|ultra|max|xhigh|high|medium|low|minimal)\)$/i, "")
+    raw = raw.replace(/-(none|off|auto|ultra|max|xhigh|high|medium|low|minimal)$/i, "")
+    return raw
+  }
+
+  function allModelKey(id, existing) {
+    // The bare id wins when All already has that model. Otherwise an effort
+    // tag such as gpt-5.6-sol(medium) stays beside gpt-5.6-sol.
+    var bare = bareModelId(id)
+    if (existing && bare && existing[bare]) return bare
+    var raw = String(id || "")
+    var sep = raw.indexOf(" · ")
+    var withoutOrigin = sep >= 0 ? raw.slice(sep + 3) : raw
+    if (existing && existing[withoutOrigin]) return withoutOrigin
+    var routed = routeTail(withoutOrigin)
+    if (existing && existing[routed]) return routed
+    return bare || raw
+  }
+
+  function addTokenMap(target, source, canonicalize) {
+    if (!source) return
+    for (var key in source) {
+      var id = canonicalize ? allModelKey(key, target) : key
+      target[id] = combineNumber(true, target[id], source[key])
     }
   }
 
@@ -309,19 +354,28 @@ Item {
     var totalSessions = 0
     var activeDates = ({})
     var hasPromptStats = false
+    // Harnesses first, then 9Router, so a gateway row joins the model id
+    // that already exists instead of minting a second name.
+    var ordered = []
     for (var i = 0; i < list.length; i++) {
-      var p = list[i]
-      // 9Router is a gateway: Grok/Cursor already have their own tabs.
-      // DailyWork and other HTTP clients live on the 9Router tab.
-      if (!p || p.providerId === "all" || p.providerId === "9router") continue
+      var provider = list[i]
+      if (!provider || provider.providerId === "all" || provider.providerId === "9router") continue
+      ordered.push(provider)
+    }
+    for (var j = 0; j < list.length; j++) {
+      if (list[j] && list[j].providerId === "9router") ordered.push(list[j])
+    }
+    for (var n = 0; n < ordered.length; n++) {
+      var p = ordered[n]
+      var fromRouter = p.providerId === "9router"
       todayPrompts += numberValue(p.todayPrompts)
       todaySessions += numberValue(p.todaySessions)
       todayTotal += numberValue(p.todayTotalTokens)
       totalPrompts += numberValue(p.totalPrompts)
       totalSessions += numberValue(p.totalSessions)
       if (p.hasPromptStats !== false) hasPromptStats = true
-      addModelTotals(modelUsage, p.modelUsage)
-      combineObjectNumbers(true, todayModels, p.todayTokensByModel)
+      addModelTotals(modelUsage, p.modelUsage, fromRouter)
+      addTokenMap(todayModels, p.todayTokensByModel, fromRouter)
       var recent = p.recentDays || []
       for (var r = 0; r < recent.length; r++) {
         var day = recent[r] || {}
@@ -339,7 +393,7 @@ Item {
         historyByDate[hd].messageCount += numberValue(row.messageCount)
         historyByDate[hd].prompts += numberValue(row.prompts)
         historyByDate[hd].sessions += numberValue(row.sessions)
-        combineObjectNumbers(true, historyByDate[hd].tokensByModel, row.tokensByModel)
+        addTokenMap(historyByDate[hd].tokensByModel, row.tokensByModel, fromRouter)
         if (numberValue(row.messageCount) > 0 || numberValue(row.prompts) > 0) activeDates[hd] = true
       }
     }
@@ -466,6 +520,8 @@ Item {
       limits: Array.isArray(record.limits) ? record.limits : [],
       tierLabel: String(record.tierLabel || ""),
       quotaState: String(record.quotaState || ""),
+      accountEmail: String(record.accountEmail || ""),
+      accountName: String(record.accountName || ""),
       sources: synced && Array.isArray(stats.sources) ? stats.sources : (Array.isArray(record.sources) ? record.sources : []),
       usageOrigin: String(synced ? (stats.usageOrigin || record.usageOrigin || "") : (record.usageOrigin || "")),
       balance: balanceValue(record.balance),

@@ -213,6 +213,18 @@ Column {
 
     Text {
       textFormat: Text.PlainText
+      visible: !!(quotaRow.row && quotaRow.row.account)
+      height: visible ? implicitHeight : 0
+      width: parent.width
+      text: quotaRow.row && quotaRow.row.account ? quotaRow.row.account : ""
+      color: root.dim
+      font.family: root.fontFamily
+      font.pixelSize: Style.font.caption
+      elide: Text.ElideRight
+    }
+
+    Text {
+      textFormat: Text.PlainText
       visible: !!(quotaRow.row && quotaRow.row.balanceText)
       height: visible ? implicitHeight : 0
       width: parent.width
@@ -246,7 +258,12 @@ Column {
       anchors.right: accountReading.left
       anchors.rightMargin: Style.space(8)
       anchors.verticalCenter: parent.verticalCenter
-      text: accountRow.row ? accountRow.row.harness : ""
+      text: {
+        if (!accountRow.row) return ""
+        var who = accountRow.row.harness || ""
+        if (accountRow.row.account) who += " · " + accountRow.row.account
+        return who
+      }
       color: root.foreground
       font.family: root.fontFamily
       font.pixelSize: Style.font.bodySmall

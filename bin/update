@@ -35,7 +35,10 @@ wanted() {
 
 status=0
 if (( ${#only[@]} == 0 )); then
-  omarchy-agent-usage-update "${flags[@]}" || status=$?
+  # Stock Codex still launches with `-a untrusted`, which current Codex
+  # rejects. That writes an empty limits record and the radar calls it a
+  # dropped login until this plugin's collector replaces it. Skip it here.
+  omarchy-agent-usage-update "${flags[@]}" --except codex || status=$?
 else
   stock=()
   for agent in "${only[@]}"; do
@@ -71,5 +74,9 @@ for agent in grok antigravity hermes cursor devin opencode 9router codex; do
   [[ -x $collector ]] || continue
   collect "$collector" "$agent" || status=1
 done
+
+if wanted claude; then
+  "$DIR/omarchy-agent-usage-claude-daily" || status=1
+fi
 
 exit "$status"
