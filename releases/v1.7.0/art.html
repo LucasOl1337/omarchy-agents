@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 1680px; }
+  body {
+    background: linear-gradient(155deg, #160D31 0%, #1D113D 48%, #28184D 100%);
+    color: #F7F3FB;
+    font-family: "Inter", "Liberation Sans", "Segoe UI", sans-serif;
+    padding: 64px 72px 52px;
+    position: relative;
+    overflow: hidden;
+  }
+  body:after {
+    content: ""; position: absolute; width: 520px; height: 520px; right: -180px; top: -170px;
+    border: 1px solid rgba(255,198,26,.13); transform: rotate(45deg); box-shadow: 0 0 0 58px rgba(170,136,250,.035);
+  }
+  .corner { position: absolute; width: 36px; height: 36px; border: 2px solid rgba(188,177,210,.45); }
+  .tl { top: 28px; left: 28px; border-right: 0; border-bottom: 0; }
+  .tr { top: 28px; right: 28px; border-left: 0; border-bottom: 0; }
+  .bl { bottom: 28px; left: 28px; border-right: 0; border-top: 0; }
+  .br { bottom: 28px; right: 28px; border-left: 0; border-top: 0; }
+  header { display: flex; justify-content: space-between; align-items: flex-start; position: relative; z-index: 1; }
+  .brand { display: flex; align-items: center; gap: 20px; }
+  h1 { font-size: 46px; line-height: 1; font-weight: 800; letter-spacing: -.8px; }
+  .tag { padding: 9px 22px; border-radius: 999px; color: #160D31; font-size: 20px; font-weight: 800; background: linear-gradient(90deg,#FFC61A,#AA88FA); }
+  .org { text-align: right; color: #BCB1D2; }
+  .org strong { display: block; font-size: 18px; letter-spacing: 5px; }
+  .org span { display: block; font-size: 18px; margin-top: 10px; }
+  .kicker { margin-top: 30px; color: #FFD89A; font-size: 22px; font-weight: 800; letter-spacing: 6px; }
+  .rule { height: 1px; background: rgba(188,177,210,.25); margin: 20px 0 18px; }
+  .summary { max-width: 980px; color: #D5CCE5; font-size: 22px; line-height: 1.4; }
+  section { margin-top: 32px; }
+  .sec-head { display: flex; align-items: center; gap: 16px; }
+  .sec-bar { width: 7px; height: 32px; border-radius: 4px; }
+  .sec-title { font-size: 22px; font-weight: 800; letter-spacing: 5px; }
+  .sec-count { margin-left: auto; color: #AFA5C5; font-size: 18px; }
+  ul { list-style: none; margin-top: 8px; }
+  li { display: grid; grid-template-columns: 14px minmax(0,1fr) 130px; gap: 16px; align-items: start; padding: 11px 0; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; margin-top: 8px; }
+  .copy { font-size: 21px; line-height: 1.35; }
+  .item { color: #F7F3FB; font-weight: 700; }
+  .benefit { color: #CEC4DE; font-weight: 400; }
+  .area { padding-top: 4px; text-align: right; color: #AFA5C5; font-size: 15px; font-weight: 700; letter-spacing: 1.6px; }
+  .new .sec-title { color: #FFC61A; } .new .sec-bar, .new .dot { background: #FFC61A; }
+  .improve .sec-title { color: #2DD29A; } .improve .sec-bar, .improve .dot { background: #2DD29A; }
+  .fix .sec-title { color: #30BCEF; } .fix .sec-bar, .fix .dot { background: #30BCEF; }
+  footer { margin-top: 36px; }
+  .motto { font-size: 24px; font-weight: 700; color: #FFD89A; }
+  .note { margin-top: 12px; color: #BCB1D2; font-size: 18px; line-height: 1.4; }
+  .platform { margin-top: 28px; color: #9F94BB; font-size: 16px; font-weight: 800; letter-spacing: 4px; }
+</style>
+</head>
+<body>
+  <div class="corner tl"></div><div class="corner tr"></div><div class="corner bl"></div><div class="corner br"></div>
+  <header>
+    <div class="brand"><h1>Omarchy Agents</h1><span class="tag">v1.7.0</span></div>
+    <div class="org"><strong>LUCASOL</strong><span>October 1, 2026</span></div>
+  </header>
+  <div class="kicker">RELEASE NOTES</div>
+  <div class="rule"></div>
+  <div class="summary">Three 9Router gateways in one tab, and All adds that usage onto the model you already track.</div>
+
+  <section class="new">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">WHAT'S NEW</span><span class="sec-count">2 highlights</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Three gateways, one tab</span><span class="benefit"> · Hostinger and Sherlocker from each gateway. Railway is the Jcode history on this PC, because the chat key cannot read that usage page.</span></div><span class="area">9ROUTER</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Same model, one row</span><span class="benefit"> · All joins a gateway row to the harness model with that name. The 9Router tab still shows which gateway it was.</span></div><span class="area">ALL</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+  <section class="improve">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">IMPROVEMENTS</span><span class="sec-count">3 highlights</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Account under the pool</span><span class="benefit"> · Codex, Claude, and Grok show who is signed in. A plan with no weekly percentage stays named.</span></div><span class="area">RADAR</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Radar opens on the ranking</span><span class="benefit"> · One line per pool. A warning only when a login dropped or the percentage did not come back.</span></div><span class="area">RADAR</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Refresh drops a stuck read</span><span class="benefit"> · The arrow kills a hung collector and reads again, instead of queueing behind it.</span></div><span class="area">PANEL</span></li>
+    </ul>
+  </section>
+
+  <div class="rule"></div>
+  <section class="fix">
+    <div class="sec-head"><span class="sec-bar"></span><span class="sec-title">FIXES</span><span class="sec-count">4 highlights</span></div>
+    <ul>
+      <li><span class="dot"></span><div class="copy"><span class="item">Codex stays signed in</span><span class="benefit"> · A slow quota read no longer looks like a dropped login.</span></div><span class="area">RADAR</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Week is not a copy of today</span><span class="benefit"> · Claude and Codex keep a model split on each day, and week adds those days.</span></div><span class="area">PERIODS</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">All-time keeps every model</span><span class="benefit"> · The footer sums the full list, not only the rows that fit on screen.</span></div><span class="area">ALL</span></li>
+      <li><span class="dot"></span><div class="copy"><span class="item">Claude's bar matches the list</span><span class="benefit"> · Today's bar and the model rows come from the same session scan.</span></div><span class="area">CLAUDE</span></li>
+    </ul>
+  </section>
+
+  <footer>
+    <div class="motto">See the gateway, then see it on the model you already know.</div>
+    <div class="note">Full notes: github.com/LucasOl1337/omarchy-agents/releases/tag/v1.7.0</div>
+    <div class="platform">OMARCHY AGENTS</div>
+  </footer>
+</body>
+</html>
