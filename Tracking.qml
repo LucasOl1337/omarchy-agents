@@ -22,6 +22,14 @@ Item {
   function kind(row) { return row.kind === "session" ? "Sessão · " + row.calls + " chamadas" : row.kind === "turn" ? "Turno · " + row.calls + " chamadas" : "Chamada" }
   function scrollBy(dy) { history.contentY = Math.max(0, Math.min(history.contentHeight - history.height, history.contentY + dy * 42)) }
   function inspect(row) { selected = row; tracker.loadDetails(row.id); detailsPopup.open() }
+  function clearSelection() { selected = null; detailsPopup.close() }
+  Connections {
+    target: root.tracker
+    function onPeriodChanged() { root.clearSelection() }
+    function onProviderChanged() { root.clearSelection() }
+    function onProjectChanged() { root.clearSelection() }
+    function onSearchChanged() { root.clearSelection() }
+  }
 
   component Label: Text {
     textFormat: Text.PlainText
@@ -104,6 +112,13 @@ Item {
       width: parent.width
       color: root.dim
       text: tracker.error || (tracker.snapshot.errors.length ? tracker.snapshot.errors.join(" · ") : root.projectOverview ? root.count(tracker.snapshot.tokens) + " tokens · " + tracker.snapshot.projects.length + " projetos" : tracker.snapshot.records + " registros" + (root.live ? " hoje · a cada 5 s" : " · " + root.count(tracker.snapshot.tokens) + " tokens"))
+    }
+    Label {
+      width: parent.width
+      wrapMode: Text.Wrap
+      elide: Text.ElideNone
+      text: "Registros desta máquina" + (tracker.snapshot.excludedTokens > 0 ? " · " + root.count(tracker.snapshot.excludedTokens) + " tokens de sessões atravessam o início do período e ficaram fora." : "")
+      color: root.dim
     }
     Row {
       id: headings

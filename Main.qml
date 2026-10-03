@@ -238,7 +238,7 @@ Item {
       if (providerHasData(syncedDisplay)) result.push(syncedDisplay)
     }
     result.sort(function(a, b) { return providerOrder(a.providerId) - providerOrder(b.providerId) })
-    if (result.length > 0) result.unshift(aggregateProviders(result))
+    if (result.length > 0) result.unshift(allDescriptor())
     return result
   }
 
@@ -287,17 +287,6 @@ Item {
     return out
   }
 
-  function addModelTotals(target, source, canonicalize) {
-    if (!source) return
-    for (var key in source) {
-      var id = canonicalize ? allModelKey(key, target) : key
-      var value = source[key]
-      if (!target[id] || typeof target[id] !== "object") target[id] = emptyTokenBucket()
-      if (value && typeof value === "object") combineObjectNumbers(true, target[id], value)
-      else target[id].inputTokens = numberValue(target[id].inputTokens) + numberValue(value)
-    }
-  }
-
   // 9Router labels the gateway and the effort (`Sherlocker · cc/claude-opus-5-5(high)`).
   // All folds that into the harness row with the same model id.
   function routeTail(id) {
@@ -332,102 +321,14 @@ Item {
     return bare || raw
   }
 
-  function addTokenMap(target, source, canonicalize) {
-    if (!source) return
-    for (var key in source) {
-      var id = canonicalize ? allModelKey(key, target) : key
-      target[id] = combineNumber(true, target[id], source[key])
-    }
-  }
-
-  function aggregateProviders(list) {
-    var historyByDate = ({})
-    var modelUsage = ({})
-    var todayModels = ({})
-    var recentByDay = ({})
-    var dates = recentDateStrings()
-    for (var d = 0; d < dates.length; d++) recentByDay[dates[d]] = 0
-    var todayPrompts = 0
-    var todaySessions = 0
-    var todayTotal = 0
-    var totalPrompts = 0
-    var totalSessions = 0
-    var activeDates = ({})
-    var hasPromptStats = false
-    // Harnesses first, then 9Router, so a gateway row joins the model id
-    // that already exists instead of minting a second name.
-    var ordered = []
-    for (var i = 0; i < list.length; i++) {
-      var provider = list[i]
-      if (!provider || provider.providerId === "all" || provider.providerId === "9router") continue
-      ordered.push(provider)
-    }
-    for (var j = 0; j < list.length; j++) {
-      if (list[j] && list[j].providerId === "9router") ordered.push(list[j])
-    }
-    for (var n = 0; n < ordered.length; n++) {
-      var p = ordered[n]
-      var fromRouter = p.providerId === "9router"
-      todayPrompts += numberValue(p.todayPrompts)
-      todaySessions += numberValue(p.todaySessions)
-      todayTotal += numberValue(p.todayTotalTokens)
-      totalPrompts += numberValue(p.totalPrompts)
-      totalSessions += numberValue(p.totalSessions)
-      if (p.hasPromptStats !== false) hasPromptStats = true
-      addModelTotals(modelUsage, p.modelUsage, fromRouter)
-      addTokenMap(todayModels, p.todayTokensByModel, fromRouter)
-      var recent = p.recentDays || []
-      for (var r = 0; r < recent.length; r++) {
-        var day = recent[r] || {}
-        var date = String(day.date || "")
-        if (recentByDay[date] !== undefined)
-          recentByDay[date] += numberValue(day.messageCount)
-      }
-      var hist = p.history || []
-      for (var h = 0; h < hist.length; h++) {
-        var row = hist[h] || {}
-        var hd = String(row.date || "")
-        if (!hd) continue
-        if (!historyByDate[hd])
-          historyByDate[hd] = { date: hd, messageCount: 0, tokensByModel: ({}), prompts: 0, sessions: 0 }
-        historyByDate[hd].messageCount += numberValue(row.messageCount)
-        historyByDate[hd].prompts += numberValue(row.prompts)
-        historyByDate[hd].sessions += numberValue(row.sessions)
-        addTokenMap(historyByDate[hd].tokensByModel, row.tokensByModel, fromRouter)
-        if (numberValue(row.messageCount) > 0 || numberValue(row.prompts) > 0) activeDates[hd] = true
-      }
-    }
-    var history = []
-    var keys = Object.keys(historyByDate).sort()
-    for (var k = 0; k < keys.length; k++) history.push(historyByDate[keys[k]])
-    var recentDays = []
-    for (var di = 0; di < dates.length; di++)
-      recentDays.push({ date: dates[di], messageCount: recentByDay[dates[di]] || 0 })
+  // All is a navigation entry. UsageMath owns its accounting so this
+  // discovery layer cannot calculate a competing total or model breakdown.
+  function allDescriptor() {
     return {
-      providerId: "all",
-      providerName: "All",
-      chipName: "All",
-      ready: true,
-      usageStatusText: "",
-      authHelpText: "",
-      limits: [],
-      tierLabel: "Every harness",
-      balance: null,
-      todayPrompts: todayPrompts,
-      todaySessions: todaySessions,
-      todayTotalTokens: todayTotal,
-      todayTokensByModel: todayModels,
-      recentDays: recentDays,
-      history: history,
-      totalPrompts: totalPrompts,
-      totalSessions: totalSessions,
-      activeDays: Object.keys(activeDates).length,
-      modelUsage: modelUsage,
-      hasLocalStats: true,
-      hasPromptStats: hasPromptStats,
-      syncEnabled: false,
-      syncDeviceCount: 0,
-      syncUpdatedAt: ""
+      providerId: "all", providerName: "All", chipName: "All", ready: true,
+      usageStatusText: "", authHelpText: "", limits: [], balance: null,
+      tierLabel: "Todas as fontes", hasPromptStats: true,
+      syncEnabled: false, syncDeviceCount: 0, syncUpdatedAt: ""
     }
   }
 
@@ -441,7 +342,8 @@ Item {
   function providerHasData(p) {
     return numberValue(p.totalPrompts) > 0 || numberValue(p.totalSessions) > 0
       || numberValue(p.activeDays) > 0 || numberValue(p.todayPrompts) > 0
-      || numberValue(p.todaySessions) > 0 || (p.limits && p.limits.length > 0)
+      || numberValue(p.todaySessions) > 0 || numberValue(p.todayTotalTokens) > 0
+      || Object.keys(p.modelUsage || {}).length > 0 || (p.limits && p.limits.length > 0)
       || !!p.balance
   }
 
@@ -471,7 +373,7 @@ Item {
     var updated = record.updatedAt
     if (updated) {
       var parsed = new Date(updated)
-      if (!isNaN(parsed.getTime()) && dateString(parsed) === today) return true
+      if (!isNaN(parsed.getTime())) return dateString(parsed) === today
     }
     var lists = [record.recentDays, record.history]
     for (var L = 0; L < lists.length; L++) {
@@ -533,6 +435,7 @@ Item {
       chipName: chipNameFor(String(record.id), String(record.name || record.id)),
       todayTokensByModel: today.todayTokensByModel,
       periodTokensByModel: synced ? (stats.periodTokensByModel || ({})) : (record.periodTokensByModel || ({})),
+      periodTotals: synced ? (stats.periodTotals || ({})) : (record.periodTotals || ({})),
       todayHours: synced ? (stats.todayHours || []) : (record.todayHours || []),
       recentDays: synced ? (stats.recentDays || []) : (record.recentDays || []),
       history: synthesizeHistory(synced ? {
@@ -796,7 +699,7 @@ Item {
 
   function numberValue(value) {
     var n = Number(value || 0)
-    return isFinite(n) ? Math.round(n) : 0
+    return isFinite(n) && n > 0 ? Math.round(n) : 0
   }
 
   function dateString(date) {
@@ -830,13 +733,30 @@ Item {
 
   function combineObjectNumbers(additive, target, source) {
     if (!source) return
-    for (var key in source) target[key] = combineNumber(additive, target[key], source[key])
+    for (var key in source) {
+      if (source[key] && typeof source[key] === "object") {
+        if (!target[key] || typeof target[key] !== "object") target[key] = ({})
+        combineObjectNumbers(additive, target[key], source[key])
+      } else target[key] = combineNumber(additive, target[key], source[key])
+    }
   }
 
   function aggregateSnapshots(snapshots) {
     var dates = recentDateStrings()
     var devices = {}
     var providers = {}
+    // Account-scoped records are replicas. Select one whole latest record;
+    // taking a maximum independently per model can invent a larger account.
+    var accounts = {}
+    for (var ai = 0; ai < snapshots.length; ai++) {
+      var records = snapshots[ai].providers || {}
+      for (var aid in records) {
+        var candidate = records[aid] || {}
+        if (candidate.scope !== "account") continue
+        var stamp = new Date(candidate.updatedAt || snapshots[ai].updatedAt || "").getTime() || 0
+        if (!accounts[aid] || stamp > accounts[aid].stamp) accounts[aid] = { index: ai, stamp: stamp }
+      }
+    }
 
     function providerAcc(id) {
       if (providers[id]) return providers[id]
@@ -853,6 +773,8 @@ Item {
         todayTotalTokens: 0,
         todayTokensByModel: ({}),
         periodTokensByModel: ({ day: ({}), week: ({}), month: ({}) }),
+        periodTotals: ({}),
+        history: ({}),
         todayHours: ({}),
         sources: ({}),
         recentByDay: recentByDay,
@@ -875,6 +797,7 @@ Item {
         var stats = snapshotProviders[providerId] || {}
         var acc = providerAcc(String(providerId))
         acc.devices[device] = true
+        if (stats.scope === "account" && accounts[providerId] && accounts[providerId].index !== i) continue
         if (stats.providerName && acc.providerName === "") acc.providerName = String(stats.providerName)
         acc.ready = acc.ready || stats.ready === true
         acc.hasLocalStats = acc.hasLocalStats || stats.hasLocalStats !== false
@@ -896,6 +819,7 @@ Item {
         acc.activeDays = Math.max(acc.activeDays, numberValue(stats.activeDays))
         combineObjectNumbers(additive, acc.todayTokensByModel, today.todayTokensByModel)
         var periodMaps = stats.periodTokensByModel || {}
+        combineObjectNumbers(additive, acc.periodTotals, stats.periodTotals || {})
         var periodNames = ["day", "week", "month"]
         for (var pi = 0; pi < periodNames.length; pi++) {
           var periodName = periodNames[pi]
@@ -937,6 +861,17 @@ Item {
           if (acc.recentByDay[date] !== undefined)
             acc.recentByDay[date] = combineNumber(additive, acc.recentByDay[date], day.messageCount)
         }
+        var history = Array.isArray(stats.history) ? stats.history : []
+        for (var hd = 0; hd < history.length; hd++) {
+          var row = history[hd] || {}, dayKey = String(row.date || "")
+          if (!dayKey) continue
+          if (!acc.history[dayKey]) acc.history[dayKey] = { date: dayKey, messageCount: 0, prompts: 0, sessions: 0, tokensByModel: ({}) }
+          var dated = acc.history[dayKey]
+          dated.messageCount = combineNumber(additive, dated.messageCount, row.messageCount)
+          dated.prompts = combineNumber(additive, dated.prompts, row.prompts)
+          dated.sessions = combineNumber(additive, dated.sessions, row.sessions)
+          combineObjectNumbers(additive, dated.tokensByModel, row.tokensByModel || {})
+        }
 
         var usage = stats.modelUsage || {}
         for (var modelId in usage) {
@@ -962,6 +897,7 @@ Item {
       outProviders[id] = {
         providerId: acc.providerId,
         providerName: acc.providerName,
+        updatedAt: new Date().toISOString(),
         ready: acc.ready || providerDevices.length > 0,
         hasLocalStats: acc.hasLocalStats,
         hasPromptStats: acc.hasPromptStats,
@@ -970,6 +906,8 @@ Item {
         todayTotalTokens: acc.todayTotalTokens,
         todayTokensByModel: acc.todayTokensByModel,
         periodTokensByModel: acc.periodTokensByModel,
+        periodTotals: acc.periodTotals,
+        history: Object.keys(acc.history).sort().map(function(day) { return acc.history[day] }),
         todayHours: todayHours,
         sources: sources,
         recentDays: recentDays,
@@ -1009,6 +947,8 @@ Item {
       todayTotalTokens: today.todayTotalTokens,
       todayTokensByModel: cloneValue(today.todayTokensByModel, ({})),
       periodTokensByModel: cloneValue(record.periodTokensByModel, ({})),
+      periodTotals: cloneValue(record.periodTotals, ({})),
+      history: cloneValue(record.history, []),
       todayHours: cloneValue(record.todayHours, []),
       sources: cloneValue(record.sources, []),
       recentDays: cloneValue(record.recentDays, []),

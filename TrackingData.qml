@@ -13,6 +13,7 @@ Item {
   // With hours > 0, buckets from local midnight to the current hour instead
   // of the rolling window.
   property bool today: false
+  property bool summary: false
   property string period: "week"
   property string provider: "all"
   property string project: "*"
@@ -27,6 +28,9 @@ Item {
   // refresh button so a stale ledger is visible instead of silently old.
   readonly property real updatedAt: Number((snapshot || {}).updatedAt || 0)
   onPeriodChanged: resetPage()
+  onHoursChanged: resetPage()
+  onTodayChanged: resetPage()
+  onSummaryChanged: resetPage()
   onProviderChanged: { project = "*"; resetPage() }
   onProjectChanged: resetPage()
   onSearchChanged: resetPage()
@@ -39,7 +43,7 @@ Item {
     var script = decodeURIComponent(Qt.resolvedUrl("bin/tracking.py").toString().substring(7))
     collector.command = hours > 0
       ? ["python3", script, "--hours", String(hours), "--provider", provider].concat(today ? ["--today"] : [])
-      : ["python3", script, "--period", period, "--provider", provider, "--project", project, "--search", search, "--offset", String(offset)]
+      : ["python3", script, "--period", period, "--provider", provider, "--project", project, "--search", search, "--offset", String(offset)].concat(summary ? ["--summary"] : [])
     collector.running = true
     collectorWatchdog.restart()
   }

@@ -180,6 +180,18 @@ class NineRouterUsageTests(unittest.TestCase):
         self.assertEqual(sum(row["messageCount"] for row in stats["todayHours"]), 3000)
         self.assertEqual(stats["todayHours"][0]["sources"], {"Local": 1, "Railway": 9})
 
+    def test_authoritative_today_total_survives_chart_request_skew(self):
+        stats = ninerouter.collect_api(self._federated_fetch)
+        today = datetime.now().astimezone().date().isoformat()
+        row = next(row for row in stats['history'] if row['date'] == today)
+        self.assertEqual(row['messageCount'], stats['todayTotalTokens'])
+        self.assertEqual(stats['periodTotals'], {'day':110,'week':220,'month':330,'total':440})
+
+    def test_chart_dates_use_actual_labels_instead_of_array_positions(self):
+        from datetime import date
+        rows = ninerouter.chart_dates('7d', [{'label':'Oct 3','tokens':100},{'label':'Oct 1','tokens':50}], date(2026,10,3))
+        self.assertEqual([row['date'] for row in rows], ['2026-10-03','2026-10-01'])
+
     def test_gateways_sum_tokens_and_keep_each_origin(self):
         def payload(prompt, completion):
             stats = {

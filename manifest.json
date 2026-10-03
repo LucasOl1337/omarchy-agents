@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "lol.agents",
   "name": "Agents",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "author": "LucasOl",
   "license": "MIT",
   "description": "Uso de agentes e inspe\u00e7\u00e3o compacta por projeto, com pr\u00e9vias locais e detalhes sob demanda.",

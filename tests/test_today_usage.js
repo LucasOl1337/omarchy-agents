@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const vm = require('node:vm');
 const { test } = require('node:test');
 const context = vm.createContext({});
-vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../TodayUsage.js'), 'utf8'), context);
+vm.runInContext(fs.readFileSync(require('node:path').join(__dirname, '../UsageMath.js'), 'utf8'), context);
 const combine = (ledger, summaries) => JSON.parse(JSON.stringify(context.combine(ledger, summaries, id => id.replace(/^.* · /, '').replace(/\(high\)$/, ''))));
 const summary = (id, tokens, models, current = true) => ({id, name: id, tokens, models, current});
 const local = {

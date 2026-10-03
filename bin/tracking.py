@@ -4,6 +4,7 @@ import argparse
 import fcntl
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -12,6 +13,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote
+from usage_accounting import summarize
 
 HOME = Path.home()
 STATE = Path(os.environ.get('OMARCHY_TRACKING_STATE', Path(os.environ.get('XDG_STATE_HOME', HOME / '.local/state')) / 'omarchy/agents/tracking'))
@@ -20,16 +22,18 @@ STATE = Path(os.environ.get('OMARCHY_TRACKING_STATE', Path(os.environ.get('XDG_S
 def number(value):
     try:
         return max(0, int(value or 0))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
 def stamp(value):
     if isinstance(value, (float, int)):
+        if not math.isfinite(value) or value <= 0:
+            return 0
         return value / 1000 if value > 10_000_000_000 else value
     try:
         return datetime.fromisoformat(str(value).replace('Z', '+00:00')).timestamp()
-    except ValueError:
+    except (ValueError, TypeError, OSError, OverflowError):
         return 0
 
 
@@ -79,7 +83,7 @@ def workspace_names():
 
 
 WORKSPACES = workspace_names()
-REVISION = hashlib.sha256(json.dumps(WORKSPACES, sort_keys=True).encode()).hexdigest() + ':5'
+REVISION = hashlib.sha256(json.dumps(WORKSPACES, sort_keys=True).encode()).hexdigest() + ':7'
 # 9Router backends that already have a harness collector. DailyWork and other
 # HTTP clients use the Codex connection without writing ~/.codex/sessions.
 PASSTHROUGH_BACKENDS = frozenset({'grok-cli', 'grok', 'xai', 'anthropic', 'claude'})
@@ -183,8 +187,26 @@ def json_events(path, provider, state=None, start=0):
                 item = json.loads(line)
             except (ValueError, TypeError):
                 continue
+            if not isinstance(item, dict):
+                continue
             payload = item.get('payload') or {}
-            if provider == 'codex':
+            if provider == 'pi':
+                msg = item.get('message') or {}
+                if item.get('type') == 'session':
+                    state['cwd'] = item.get('cwd') or state['cwd']
+                if msg.get('role') == 'user':
+                    state['message'] = {'offset': position, 'format': 'pi'}
+                usage = msg.get('usage') or {}
+                if item.get('type') != 'message' or msg.get('role') != 'assistant' or not usage:
+                    continue
+                account = str(msg.get('provider') or item.get('provider') or '')
+                actual = {'openai-codex': 'codex', 'anthropic': 'claude', 'xai': 'grok', 'xai-auth': 'grok'}.get(account)
+                if not actual:
+                    continue
+                yield event(f"{path}:{item.get('id') or index}", actual, str(path), msg.get('model'), state['cwd'],
+                    item.get('timestamp') or msg.get('timestamp'), usage.get('input'), usage.get('output'),
+                    usage.get('cacheRead'), usage.get('cacheWrite'), caller='Pi / ' + account, message=state.get('message'))
+            elif provider == 'codex':
                 if item.get('type') == 'session_meta':
                     state['session'] = payload.get('id', state['session'])
                     state['cwd'] = payload.get('cwd', state['cwd'])
@@ -222,13 +244,15 @@ def json_events(path, provider, state=None, start=0):
                 msg = item.get('message') or {}
                 if item.get('type') == 'user' and not item.get('isMeta') and text_content(msg.get('content')):
                     state['message'] = {'offset': position}
-                usage = msg.get('usage') or {}
-                if item.get('type') != 'assistant' or not usage:
+                usage = msg.get('usage') or item.get('usage') or {}
+                if (item.get('type') != 'assistant' and msg.get('role') != 'assistant') or not usage:
                     continue
                 session = item.get('sessionId') or item.get('session_id') or state['session']
                 yield event(msg.get('id') or item.get('uuid') or f'{session}:{index}', provider, session,
-                            msg.get('model'), item.get('cwd'), item.get('timestamp'), usage.get('input_tokens'),
-                            usage.get('output_tokens'), usage.get('cache_read_input_tokens'), usage.get('cache_creation_input_tokens'),
+                            msg.get('model') or item.get('model'), item.get('cwd'), item.get('timestamp') or msg.get('timestamp'),
+                            usage.get('input_tokens', usage.get('inputTokens')), usage.get('output_tokens', usage.get('outputTokens')),
+                            usage.get('cache_read_input_tokens', usage.get('cacheReadInputTokens')),
+                            usage.get('cache_creation_input_tokens', usage.get('cacheCreationInputTokens')),
                             caller=item.get('agentId') or item.get('entrypoint') or 'Claude', message=state.get('message'))
             elif provider == 'grok':
                 params = item.get('params') or {}
@@ -270,14 +294,21 @@ def db_events(path, provider):
             for row in db.execute(query):
                 key = hashlib.sha256(json.dumps([row[k] for k in ['session_id', 'model', 'billing_provider', 'billing_base_url', 'billing_mode', 'task']]).encode()).hexdigest()
                 cwd = row['cwd'] or declared_directory(row['environment'])
-                yield event(f'{path.parent}:{key}', provider, row['session_id'], row['model'], cwd, row['last_seen'],
+                result = event(f'{path.parent}:{key}', provider, row['session_id'], row['model'], cwd, row['last_seen'],
                             row['input_tokens'], row['output_tokens'] + row['reasoning_tokens'], row['cache_read_tokens'],
                             row['cache_write_tokens'], kind='session', calls=row['api_call_count'],
                             caller='Hermes / ' + str(row['profile_name'] or row['source'] or path.parent.name),
                             project_origin='Diretório da sessão' if row['cwd'] else 'Diretório inicial declarado pela ferramenta')
+                result['spanStart'] = stamp(row['first_seen']) if 'first_seen' in row.keys() else 0
+                yield result
         elif provider == 'opencode':
             for row in db.execute('SELECT m.id, m.session_id, m.time_created, m.data, s.directory FROM message m JOIN session s ON s.id=m.session_id'):
-                data = json.loads(row['data'])
+                try:
+                    data = json.loads(row['data'])
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(data, dict):
+                    continue
                 usage = data.get('tokens') or {}
                 if data.get('role') != 'assistant' or not usage or not (data.get('time') or {}).get('completed'):
                     continue
@@ -289,7 +320,10 @@ def db_events(path, provider):
                             message={'parent': data.get('parentID')})
         elif provider == '9router':
             for row in db.execute('SELECT id,timestamp,provider,model,promptTokens,completionTokens,status,meta FROM usageHistory'):
-                meta = json.loads(row['meta'] or '{}')
+                try:
+                    meta = json.loads(row['meta'] or '{}')
+                except (TypeError, ValueError):
+                    meta = {}
                 if not isinstance(meta, dict):
                     meta = {}
                 backend = str(row['provider'] or '')
@@ -310,6 +344,8 @@ def db_events(path, provider):
                     message = json.loads(row['chat_message'])
                 except (TypeError, ValueError):
                     continue
+                if not isinstance(message, dict):
+                    continue
                 metadata = (message or {}).get('metadata') or {}
                 metrics = metadata.get('metrics') or {}
                 if message.get('role') != 'assistant' or not metrics:
@@ -329,7 +365,9 @@ def sources():
     for provider, root, pattern in [('codex', HOME / '.codex/sessions', '*.jsonl'),
                                     ('codex', HOME / '.codex/archived_sessions', '*.jsonl'),
                                     ('claude', HOME / '.claude/projects', '*.jsonl'),
-                                    ('grok', HOME / '.grok/sessions', 'updates.jsonl')]:
+                                    ('grok', HOME / '.grok/sessions', 'updates.jsonl'),
+                                    ('pi', HOME / '.pi/agent/sessions', '*.jsonl'),
+                                    ('pi', HOME / '.omp/agent/sessions', '*.jsonl')]:
         for path in root.rglob(pattern):
             yield path, provider, json_events
     for path in [HOME / '.hermes/state.db', *(HOME / '.hermes/profiles').glob('*/state.db')]:
@@ -352,15 +390,22 @@ def init_db(db):
 
 def scan(db):
     errors, counts = [], {}
+    seen = set()
     metrics = dict(jsonBytesRead=0, changedFiles=0)
+    cached = {row[0]: row[1:] for row in db.execute("SELECT f.path,f.signature,coalesce(c.state,'{}'),coalesce(c.offset,0),coalesce(c.inode,0) FROM files f LEFT JOIN cursors c ON c.path=f.path")}
     for path, provider, parser in sources():
+        seen.add(str(path))
         counts[provider] = counts.get(provider, 0) + 1
         try:
             stat = path.stat()
-            wal = Path(str(path) + '-wal')
-            walstat = wal.stat() if wal.exists() else None
+            walstat = None
+            if parser is db_events:
+                try:
+                    walstat = Path(str(path) + '-wal').stat()
+                except FileNotFoundError:
+                    pass
             signature = f'{REVISION}:{stat.st_size}:{stat.st_mtime_ns}:{walstat.st_size if walstat else 0}:{walstat.st_mtime_ns if walstat else 0}'
-            old = db.execute("SELECT f.signature,coalesce(c.state,'{}'),coalesce(c.offset,0),coalesce(c.inode,0) FROM files f LEFT JOIN cursors c ON c.path=f.path WHERE f.path=?", (str(path),)).fetchone()
+            old = cached.get(str(path))
             if old and old[0] == signature:
                 continue
             metrics['changedFiles'] += 1
@@ -379,13 +424,21 @@ def scan(db):
                 if not incremental:
                     db.execute('DELETE FROM events WHERE source=?', (str(path),))
                 db.executemany('INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?)',
-                               [(r['id'], str(path), provider, r['project'], r['model'], r['timestamp'],
+                               [(r['id'], str(path), r['provider'], r['project'], r['model'], r['timestamp'],
                                  sum(r[k] for k in ['input', 'output', 'cacheRead', 'cacheWrite']), r['calls'], json.dumps(r)) for r in entries.values()])
                 db.execute('INSERT OR REPLACE INTO files(path,signature) VALUES (?,?)', (str(path), signature))
                 db.execute('INSERT OR REPLACE INTO cursors VALUES (?,?,?,?)',
                            (str(path), json.dumps(state), state.get('offset', 0), stat.st_ino))
         except (OSError, ValueError, sqlite3.Error, KeyError, TypeError) as error:
             errors.append(f'{provider}: {type(error).__name__} em {path.name}')
+    # Removed or archived sources must not leave ghost usage behind. Keep
+    # files seen during a failed read; a transient error is not a deletion.
+    with db:
+        for source in cached:
+            if source not in seen:
+                db.execute('DELETE FROM events WHERE source=?', (source,))
+                db.execute('DELETE FROM cursors WHERE path=?', (source,))
+                db.execute('DELETE FROM files WHERE path=?', (source,))
     return errors, counts, metrics
 
 
@@ -413,7 +466,9 @@ class Previews:
                     with open(source, 'rb') as stream:
                         stream.seek(ref['offset'])
                         item = json.loads(stream.readline())
-                    if row['provider'] == 'codex':
+                    if ref.get('format') == 'pi':
+                        text = text_content((item.get('message') or {}).get('content'))
+                    elif row['provider'] == 'codex':
                         payload = item.get('payload') or {}
                         text = text_content(payload.get('message')) or text_content(payload.get('content'))
                     elif row['provider'] == 'claude':
@@ -460,74 +515,88 @@ def project_name(pid):
     return WORKSPACES.get(pid, Path(pid).name) if pid else 'Sem projeto'
 
 
-def hourly(db, args, errors, counts, metrics=None):
-    now = datetime.now().astimezone()
-    current = now.replace(minute=0, second=0, microsecond=0)
-    if getattr(args, 'today', False):
-        # Midnight to the current hour: the panel's Hour period is "today by
-        # hour", not a rolling window that opens on yesterday's 18:00 at 17:00.
-        first = current.replace(hour=0)
-        window = current.hour + 1
-    else:
-        window = max(1, min(24 * 7, int(args.hours or 24)))
-        first = current - timedelta(hours=window - 1)
-    clauses, params = ['timestamp>=?', 'timestamp<=?'], [first.timestamp(), now.timestamp()]
-    extra, extra_params = provider_clause(args.provider)
-    clauses.append(extra)
-    params.extend(extra_params)
-    where = ' AND '.join(clauses)
-    buckets = {}
+def period_start(period, now):
+    if period == 'total':
+        return 0
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return (midnight - timedelta(days={'day': 0, 'week': 6, 'month': 29}[period])).timestamp()
+
+
+def accounting_parts(db, provider, since, until, period):
+    clause, params = provider_clause(provider)
+    rows = db.execute(f"""SELECT provider, model, timestamp, tokens, calls, project,
+        CASE WHEN provider='hermes' THEN json_extract(data,'$.kind') ELSE 'call' END,
+        CASE WHEN provider='hermes' THEN json_extract(data,'$.spanStart') ELSE NULL END
+        FROM events WHERE timestamp>=? AND timestamp<=? AND {clause}""", [since, until, *params])
+    return summarize(rows, since, until, period)
+
+
+def merge_counts(target, values):
+    for key, amount in values.items():
+        target[key] = target.get(key, 0) + amount
+
+
+def combined_totals(parts):
     models = {}
-    by_provider = {}
-    total = calls = 0
-    for ts, tokens, n_calls, model, pid, provider in db.execute(f'SELECT timestamp,tokens,calls,model,project,provider FROM events WHERE {where}', params):
-        start = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp()
-        bucket = buckets.setdefault(start, dict(tokens=0, calls=0, models={}, projects={}))
-        bucket['tokens'] += tokens
-        bucket['calls'] += n_calls
-        # Per-bucket splits so the hour tooltip can say which models and
-        # projects burned it.
-        bucket['models'][model] = bucket['models'].get(model, 0) + tokens
-        name = project_name(pid)
-        bucket['projects'][name] = bucket['projects'].get(name, 0) + tokens
-        models[model] = models.get(model, 0) + tokens
-        part = by_provider.setdefault(provider, dict(tokens=0, calls=0, models={}, hours={}))
-        part['tokens'] += tokens
-        part['calls'] += n_calls
-        part['models'][model] = part['models'].get(model, 0) + tokens
-        hour = part['hours'].setdefault(start, dict(start=start, tokens=0, calls=0, models={}, projects={}))
-        hour['tokens'] += tokens
-        hour['calls'] += n_calls
-        hour['models'][model] = hour['models'].get(model, 0) + tokens
-        hour['projects'][name] = hour['projects'].get(name, 0) + tokens
-        total += tokens
-        calls += n_calls
+    for part in parts.values():
+        merge_counts(models, part['models'])
+    return dict(tokens=sum(p['tokens'] for p in parts.values()),
+                calls=sum(p['calls'] for p in parts.values()), models=models)
+
+
+def usage_summary(db, args, errors, counts, metrics=None):
+    now = datetime.now()
+    period = args.period
+    since = period_start(period, now)
+    parts = accounting_parts(db, args.provider, since, now.timestamp(), period)
+    days = {}
+    for part in parts.values():
+        merge_counts(days, {row['date']: row['messageCount'] for row in part['days']})
+    return dict(updatedAt=time.time(), period=period, rangeStart=since, rangeEnd=now.timestamp(),
+                days=[dict(date=day, messageCount=n) for day, n in sorted(days.items())],
+                byProvider=parts, errors=errors, sources=counts, scan=metrics or {}, **combined_totals(parts))
+
+
+def hourly(db, args, errors, counts, metrics=None):
+    now = datetime.now()
+    current = now.replace(minute=0, second=0, microsecond=0)
+    today = getattr(args, 'today', False)
+    window = current.hour + 1 if today else max(1, min(24 * 7, int(args.hours or 24)))
+    first = current.replace(hour=0) if today else current - timedelta(hours=window - 1)
+    parts = accounting_parts(db, args.provider, first.timestamp(), now.timestamp(), 'day' if today else 'hour')
+    buckets = {}
+    for part in parts.values():
+        for hour in part['hours']:
+            target = buckets.setdefault(hour['start'], dict(tokens=0, calls=0, models={}, projects={}))
+            target['tokens'] += hour['tokens']
+            target['calls'] += hour['calls']
+            merge_counts(target['models'], hour['models'])
+            hour['projects'] = {project_name(pid): n for pid, n in hour['projects'].items()}
+            merge_counts(target['projects'], hour['projects'])
     hours = []
-    for i in range(window):
-        start = (first + timedelta(hours=i)).timestamp()
-        bucket = buckets.get(start) or dict(tokens=0, calls=0, models={}, projects={})
-        hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'],
-                          models=bucket['models'], projects=bucket['projects'],
-                          current=start == current.timestamp()))
-    for part in by_provider.values():
-        part['hours'] = [part['hours'][start] for start in sorted(part['hours'])]
-    return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours, byProvider=by_provider,
-                models=models, tokens=total, calls=calls, errors=errors, sources=counts,
-                scan=metrics or {})
+    for index in range(window):
+        start = (first + timedelta(hours=index)).timestamp()
+        bucket = buckets.get(start, dict(tokens=0, calls=0, models={}, projects={}))
+        hours.append(dict(start=start, current=start == current.timestamp(), **bucket))
+    return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours, byProvider=parts,
+                errors=errors, sources=counts, scan=metrics or {}, **combined_totals(parts))
 
 
 def snapshot(db, args, errors, counts, metrics=None):
-    since = 0
-    if args.period != 'total':
-        days = {'day': 0, 'week': 6, 'month': 29}[args.period]
-        since = (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=days)).timestamp()
-    clauses, params = ['timestamp>=?'], [since]
+    since = period_start(args.period, datetime.now())
+    clauses, params = ['timestamp>=?', 'timestamp<=?'], [since, time.time()]
     extra, extra_params = provider_clause(args.provider)
     clauses.append(extra)
     params.extend(extra_params)
     if args.search:
         clauses.append('(instr(lower(data), lower(?)) > 0)')
         params.append(args.search)
+    excluded = 0
+    if args.period != 'total':
+        base = ' AND '.join(clauses)
+        excluded = db.execute(f"SELECT coalesce(sum(tokens),0) FROM events WHERE {base} AND provider='hermes' AND json_extract(data,'$.kind')='session' AND coalesce(json_extract(data,'$.spanStart'),0)<?", [*params, since]).fetchone()[0]
+        clauses.append("(provider!='hermes' OR json_extract(data,'$.kind')!='session' OR coalesce(json_extract(data,'$.spanStart'),0)>=?)")
+        params.append(since)
     where = ' AND '.join(clauses)
     projects = []
     for pid, total, calls, last in db.execute(f'SELECT project,sum(tokens),sum(calls),max(timestamp) FROM events WHERE {where} GROUP BY project ORDER BY sum(tokens) DESC', params):
@@ -544,7 +613,7 @@ def snapshot(db, args, errors, counts, metrics=None):
     finally:
         previews.close()
     return dict(updatedAt=time.time(), projects=projects, rows=rows, tokens=total, calls=calls, records=records,
-                offset=args.offset, pageSize=limit, errors=errors, sources=counts, scan=metrics or {})
+                offset=args.offset, pageSize=limit, excludedTokens=excluded, errors=errors, sources=counts, scan=metrics or {})
 
 
 def details(db, identity):
@@ -561,6 +630,7 @@ def details(db, identity):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--period', choices=['day', 'week', 'month', 'total'], default='week')
+    parser.add_argument('--summary', action='store_true', help='Calendar totals by source, model and day; no transcript previews')
     parser.add_argument('--hours', type=int, default=0, metavar='N',
                         help='per-hour buckets for the last N hours instead of the projects/rows snapshot')
     parser.add_argument('--today', action='store_true',
@@ -583,7 +653,7 @@ def main():
         with sqlite3.connect(STATE / 'ledger.sqlite') as db:
             init_db(db)
             errors, counts, metrics = scan(db)
-            out = hourly(db, args, errors, counts, metrics) if args.hours else snapshot(db, args, errors, counts, metrics)
+            out = hourly(db, args, errors, counts, metrics) if args.hours else usage_summary(db, args, errors, counts, metrics) if args.summary else snapshot(db, args, errors, counts, metrics)
             print(json.dumps(out, ensure_ascii=False))
 
 

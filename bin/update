@@ -5,6 +5,16 @@ set -u
 DIR=$(cd "$(dirname "$0")" && pwd)
 USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
 mkdir -p "$USAGE_DIR"
+exec 200>"$USAGE_DIR/.update.lock"
+flock -w 30 200 || { echo "lol.agents: another update is still running" >&2; exit 75; }
+UPDATE_DEADLINE=$((SECONDS + 240))
+
+budget() {
+  local remaining=$((UPDATE_DEADLINE - SECONDS)) maximum="$1"
+  (( remaining > 0 )) || return 1
+  (( remaining < maximum )) && maximum=$remaining
+  printf '%s' "$maximum"
+}
 
 flags=()
 only=()
@@ -13,7 +23,9 @@ declare -A excluded
 while [[ $# -gt 0 ]]; do
   case "$1" in
   --force | --limits-only) flags+=("$1") ;;
+  all) ;;
   --except)
+    [[ $# -ge 2 ]] || { echo "lol.agents: --except requires a provider" >&2; exit 2; }
     excluded[$2]=1
     shift
     ;;
@@ -38,24 +50,26 @@ if (( ${#only[@]} == 0 )); then
   # Stock Codex still launches with `-a untrusted`, which current Codex
   # rejects. That writes an empty limits record and the radar calls it a
   # dropped login until this plugin's collector replaces it. Skip it here.
-  omarchy-agent-usage-update "${flags[@]}" --except codex || status=$?
+  stock_exclusions=(--except codex)
+  for agent in "${!excluded[@]}"; do stock_exclusions+=(--except "$agent"); done
+  duration=$(budget 90) && timeout "$duration" omarchy-agent-usage-update "${flags[@]}" "${stock_exclusions[@]}" || status=$?
 else
   stock=()
   for agent in "${only[@]}"; do
     case "$agent" in
     antigravity | grok | hermes | cursor | devin | opencode | 9router | codex | all) ;;
-    *) stock+=("$agent") ;;
+    *) wanted "$agent" && stock+=("$agent") ;;
     esac
   done
   if (( ${#stock[@]} > 0 )); then
-    omarchy-agent-usage-update "${flags[@]}" "${stock[@]}" || status=$?
+    duration=$(budget 90) && timeout "$duration" omarchy-agent-usage-update "${flags[@]}" "${stock[@]}" || status=$?
   fi
 fi
 
 collect() {
   local collector="$1" agent="$2"
-  local record tmp
-  if ! record=$("$collector" "${flags[@]}") || [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+  local record tmp duration
+  if ! duration=$(budget 75) || ! record=$(timeout "$duration" "$collector" "${flags[@]}") || [[ -z $record ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$record"; then
     echo "lol.agents: $agent collector failed" >&2
     return 1
   fi
@@ -76,7 +90,7 @@ for agent in grok antigravity hermes cursor devin opencode 9router codex; do
 done
 
 if wanted claude; then
-  "$DIR/omarchy-agent-usage-claude-daily" || status=1
+  duration=$(budget 75) && timeout "$duration" "$DIR/omarchy-agent-usage-claude-daily" || status=1
 fi
 
 exit "$status"

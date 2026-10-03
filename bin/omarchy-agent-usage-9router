@@ -196,8 +196,9 @@ def chart_dates(period: str, chart: list[dict[str, Any]], today: date) -> list[d
     start = today - timedelta(days=(6 if period == "7d" else 29))
     rows = []
     for index, point in enumerate(chart):
+        parsed = chart_label_date(str(point.get("label") or ""), today)
         rows.append({
-            "date": (start + timedelta(days=index)).isoformat(),
+            "date": (parsed or (start + timedelta(days=index))).isoformat(),
             "messageCount": number(point.get("tokens")),
         })
     return rows
@@ -253,6 +254,7 @@ def collect_api(fetch=api_json) -> dict[str, Any]:
     today_s = today.isoformat()
     history_by_date.setdefault(today_s, {"date": today_s, "messageCount": 0})
     history_by_date[today_s]["tokensByModel"] = today_models
+    history_by_date[today_s]["messageCount"] = number(today_stats.get("totalPromptTokens")) + number(today_stats.get("totalCompletionTokens"))
     history_by_date[today_s]["prompts"] = number(today_stats.get("totalRequests"))
     history_by_date[today_s]["sessions"] = 1 if history_by_date[today_s]["prompts"] else 0
     history_by_date[today_s]["cost"] = round(money(today_stats.get("totalCost")), 6)
@@ -273,7 +275,7 @@ def collect_api(fetch=api_json) -> dict[str, Any]:
         "todaySessions": 1 if number(today_stats.get("totalRequests")) else 0,
         "todayTotalTokens": number(today_stats.get("totalPromptTokens")) + number(today_stats.get("totalCompletionTokens")),
         "todayTokensByModel": today_models,
-        "recentDays": week_rows,
+        "recentDays": [dict(row, messageCount=history_by_date[today_s]["messageCount"]) if row["date"] == today_s else row for row in week_rows],
         "history": [history_by_date[key] for key in sorted(history_by_date)],
         "totalPrompts": number(all_stats.get("totalRequests")),
         "totalSessions": sum(1 for row in history_by_date.values() if number(row.get("messageCount")) > 0),
@@ -281,6 +283,8 @@ def collect_api(fetch=api_json) -> dict[str, Any]:
         "activeDates": [key for key in sorted(history_by_date) if number(history_by_date[key].get("messageCount")) > 0],
         "modelUsage": all_models,
         "periodTokensByModel": {"day": today_models, "week": week_models, "month": month_models},
+        "periodTotals": {kind: number(period_stats.get(raw, {}).get("totalPromptTokens")) + number(period_stats.get(raw, {}).get("totalCompletionTokens"))
+            for kind, raw in (("day", "today"), ("week", "7d"), ("month", "30d"), ("total", "all")) if raw in period_stats},
         "todayHours": today_hours,
         "hasLocalStats": True,
         "hasPromptStats": True,
@@ -837,7 +841,11 @@ def load_gateway_cache() -> dict[str, Any] | None:
         return None
     if not isinstance(data, dict):
         return None
-    if time.time() - float(data.get("fetchedAt") or 0) > GATEWAY_CACHE_SECONDS:
+    fetched = float(data.get("fetchedAt") or 0)
+    age = time.time() - fetched
+    if age < 0 or age > GATEWAY_CACHE_SECONDS:
+        return None
+    if datetime.fromtimestamp(fetched).date() != datetime.now().date():
         return None
     gateways = data.get("gateways")
     return gateways if isinstance(gateways, dict) else None
@@ -847,8 +855,13 @@ def save_gateway_cache(gateways: dict[str, Any]) -> None:
     path = gateway_cache_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"fetchedAt": time.time(), "gateways": gateways}
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    path.chmod(0o600)
+    temporary = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        temporary.write_text(json.dumps(payload), encoding="utf-8")
+        temporary.chmod(0o600)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_gateways(*, force: bool = False) -> tuple[list[tuple[str, dict[str, Any]]], list[tuple[str, str]]]:

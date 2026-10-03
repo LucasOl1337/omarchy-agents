@@ -90,7 +90,7 @@ def line_tokens(entry: dict[str, Any]) -> tuple[str, str, str, int]:
 
 def scan_file(path: Path) -> dict[str, dict[str, int]]:
     days: dict[str, dict[str, int]] = {}
-    seen: set[str] = set()
+    latest = {}
     with path.open("r", encoding="utf-8", errors="replace") as handle:
         for line_number, line in enumerate(handle, start=1):
             if '"usage"' not in line:
@@ -102,16 +102,11 @@ def scan_file(path: Path) -> dict[str, dict[str, int]]:
             if not isinstance(entry, dict):
                 continue
             identity, day, model, total = line_tokens(entry)
-            if not day or total <= 0:
-                continue
-            # The same assistant turn is appended again as the session grows.
-            # Stock keeps the first. A line with no id is its own turn.
-            key = identity or f"{path}:{line_number}"
-            if key in seen:
-                continue
-            seen.add(key)
-            bucket = days.setdefault(day, {})
-            bucket[model] = bucket.get(model, 0) + total
+            if day and total > 0:
+                latest[identity or f"{path}:{line_number}"] = (day, model, total)
+    for day, model, total in latest.values():
+        bucket = days.setdefault(day, {})
+        bucket[model] = bucket.get(model, 0) + total
     return days
 
 
@@ -152,7 +147,7 @@ def daily_models(projects: Path, cache: dict[str, Any]) -> dict[str, dict[str, i
         cached = files.get(key) if isinstance(files.get(key), dict) else None
         if (
             cached
-            and cached.get("v") == 2
+            and cached.get("v") == 3
             and cached.get("mtime") == mtime
             and cached.get("size") == size
             and isinstance(cached.get("days"), dict)
@@ -160,7 +155,7 @@ def daily_models(projects: Path, cache: dict[str, Any]) -> dict[str, dict[str, i
             days = cached["days"]
         else:
             days = scan_file(path)
-            files[key] = {"v": 2, "mtime": mtime, "size": size, "days": days}
+            files[key] = {"v": 3, "mtime": mtime, "size": size, "days": days}
         for day, models in days.items():
             if not isinstance(models, dict):
                 continue
@@ -238,9 +233,8 @@ def apply_daily(record: dict[str, Any], days: dict[str, dict[str, int]]) -> None
                 entry["messageCount"] = found["messageCount"]
     today = datetime.now().astimezone().date().isoformat()
     found_today = by_date.get(today)
-    if found_today:
-        record["todayTotalTokens"] = found_today["messageCount"]
-        record["todayTokensByModel"] = found_today["tokensByModel"]
+    record["todayTotalTokens"] = found_today["messageCount"] if found_today else 0
+    record["todayTokensByModel"] = found_today["tokensByModel"] if found_today else {}
 
 
 def enrich(record_path: Path | None = None, projects: Path | None = None) -> bool:
@@ -253,9 +247,8 @@ def enrich(record_path: Path | None = None, projects: Path | None = None) -> boo
         return False
     cache = load_cache()
     days = daily_models(projects or (Path.home() / ".claude" / "projects"), cache)
-    if days:
-        apply_daily(record, days)
-        save_cache(cache)
+    apply_daily(record, days)
+    save_cache(cache)
     record.update(claude_account())
     write_json(target, record)
     return True

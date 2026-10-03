@@ -79,7 +79,7 @@ def day_from_unix(value: Any) -> str:
     try:
         return datetime.fromtimestamp(float(value)).astimezone().date().isoformat()
     except (TypeError, ValueError, OSError, OverflowError):
-        return datetime.now().astimezone().date().isoformat()
+        return ""
 
 
 def scan_db(path: Path) -> dict[str, Any]:
@@ -96,8 +96,10 @@ def scan_db(path: Path) -> dict[str, Any]:
     try:
         conn.row_factory = sqlite3.Row
         try:
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(session_model_usage)')}
+            first_seen = 'u.first_seen' if 'first_seen' in columns else 'NULL'
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                   s.id AS session_id,
                   s.parent_session_id AS parent_session_id,
@@ -110,6 +112,7 @@ def scan_db(path: Path) -> dict[str, Any]:
                   u.cache_read_tokens AS cache_read_tokens,
                   u.cache_write_tokens AS cache_write_tokens,
                   u.reasoning_tokens AS reasoning_tokens,
+                  {first_seen} AS first_seen,
                   u.last_seen AS last_seen,
                   s.last_activity_at AS last_activity_at,
                   s.started_at AS started_at
@@ -131,9 +134,13 @@ def scan_db(path: Path) -> dict[str, Any]:
             calls = int(row["api_call_count"] or 0)
             day = day_from_unix(row["last_seen"] or row["last_activity_at"] or row["started_at"])
             add_bucket(models[model], inp, out, cache_read, cache_write)
-            daily_models[day][model] += inp + out + cache_read + cache_write
-            daily_prompts[day] += calls
-            daily_sessions[day].add(str(row["session_id"]))
+            # session_model_usage is cumulative. Assign a date only when
+            # the whole observed session-model interval lies in that day.
+            first_day = day_from_unix(row["first_seen"]) if row["first_seen"] else ""
+            if day and day == first_day:
+                daily_models[day][model] += inp + out + cache_read + cache_write
+                daily_prompts[day] += calls
+                daily_sessions[day].add(str(row["session_id"]))
             prompts += calls
             if not row["parent_session_id"]:
                 root_sessions.add(str(row["session_id"]))

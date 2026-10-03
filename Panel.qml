@@ -4,7 +4,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
-import "TodayUsage.js" as TodayUsage
+import "UsageMath.js" as UsageMath
 
 Panel {
   id: root
@@ -70,14 +70,24 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var limits: limitWindows(provider)
-  readonly property var todaySnapshot: TodayUsage.combine(hourData.snapshot, todayProviderSummaries(),
-    function(id, existing) { return usage.allModelKey(id, existing) }, new Date(todayDate() + "T00:00:00").getTime() / 1000)
-  readonly property var models: period === "hour" || period === "day" ? todayModelRows() : modelRows(provider, period)
+  readonly property var todaySnapshot: UsageMath.assemble(hourData.snapshot, providerSummaries("day"),
+    function(id, existing) { return usage.allModelKey(id, existing) },
+    {period: "day", today: todayDate(), start: todayDate(), midnight: new Date(todayDate() + "T00:00:00").getTime() / 1000})
+  readonly property var accountingSnapshot: period === "hour" || period === "day" ? todaySnapshot
+    : UsageMath.assemble(historyData.snapshot, providerSummaries(period),
+      function(id, existing) { return usage.allModelKey(id, existing) },
+      {period: period, today: todayDate(), start: periodStartDate(period)})
+  readonly property bool accountingReady: period === "hour" || period === "day"
+    ? !!hourData.snapshot.hours && hourData.updatedAt >= new Date(todayDate() + "T00:00:00").getTime() / 1000
+    : historyData.snapshot.period === period && historyData.updatedAt > 0
+  readonly property string accountingError: period === "hour" || period === "day" ? hourData.error : historyData.error
+  readonly property var accountingErrors: (period === "hour" || period === "day" ? hourData.snapshot.errors : historyData.snapshot.errors) || []
+  readonly property var models: period === "hour" || period === "day" ? todayModelRows() : snapshotModelRows()
   // Both views use one snapshot. Usage without local timestamps is kept
   // separate in Hour, so folding rows cannot change the Day total.
   readonly property var periodRows: period === "hour" ? hourlyRows() : period === "day"
     ? [{ date: todayDate(), messageCount: todaySnapshot.tokens }]
-    : daysForPeriod(provider, period)
+    : accountingSnapshot.days
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
   // A prepaid account runs low the way a subscription window fills up: the
@@ -104,15 +114,29 @@ Panel {
     else {
       usage.forceRefresh()
       if (period === "hour" || period === "day") hourData.forceRefresh()
+      else historyData.forceRefresh()
     }
   }
 
-  readonly property bool refreshBusy: usage.updating || ((period === "hour" || period === "day") && hourData.busy)
+  // Read-only evidence of the code and totals currently loaded by the shell.
+  function diagnostics() {
+    var rowsTotal = 0
+    for (var i = 0; i < periodRows.length; i++) rowsTotal += Number(periodRows[i].messageCount || 0)
+    return JSON.stringify({ version: "1.8.0", sourceUrl: Qt.resolvedUrl("Panel.qml").toString(), provider: provider ? provider.providerId : "all",
+      period: period, modelPeriod: modelPeriodLabel(), ready: accountingReady, error: accountingError,
+      scanErrors: accountingErrors, tokens: accountingSnapshot.tokens, rowTokens: rowsTotal,
+      visibleModelTokens: models.reduce(function(total, row) { return total + Number(row.total || 0) }, 0),
+      models: accountingSnapshot.models, unassigned: accountingSnapshot.unassigned,
+      warnings: accountingSnapshot.warnings, sources: accountingSnapshot.sources,
+      ledgerUpdatedAt: period === "hour" || period === "day" ? hourData.updatedAt : historyData.updatedAt })
+  }
 
-  // "lido 16:52" next to the button; the hour ledger's own stamp when Hour is
-  // on screen, else the last finished collector run.
+  readonly property bool refreshBusy: usage.updating || (period === "hour" || period === "day" ? hourData.busy : historyData.busy)
+
+  // Timestamp of the accounting snapshot currently selected.
   function lastReadLabel() {
-    var ms = (period === "hour" || period === "day") && hourData.updatedAt > 0 ? hourData.updatedAt * 1000 : usage.lastUpdateMs
+    var stamp = period === "hour" || period === "day" ? hourData.updatedAt : historyData.updatedAt
+    var ms = stamp > 0 ? stamp * 1000 : usage.lastUpdateMs
     if (!(ms > 0)) return ""
     return "lido " + Qt.formatDateTime(new Date(ms), "HH:mm")
   }
@@ -173,8 +197,9 @@ Panel {
     var list = p.limits || []
     for (var i = 0; i < list.length; i++) {
       var entry = list[i] || {}
+      if (entry.percent === null || entry.percent === undefined || entry.percent === "") continue
       var percent = Number(entry.percent)
-      if (percent >= 0) out.push(limitWindow(entry.label, percent, entry.resetsAt, entry.title))
+      if (isFinite(percent) && percent >= 0) out.push(limitWindow(entry.label, percent, entry.resetsAt, entry.title))
     }
     return out
   }
@@ -700,29 +725,43 @@ Panel {
     return out
   }
 
-  function todayProviderSummaries() {
+  function providerSummaries(kind) {
     var list = provider && provider.providerId !== "all" ? [provider] : root.providers
     var out = []
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
       if (!p || p.providerId === "all") continue
+      var dated = daysForPeriod(p, kind)
+      var modelMap = kind === "day" ? p.todayTokensByModel || ({}) : periodModelMap(p, kind)
+      var tokens = kind === "day" ? Number(p.todayTotalTokens || 0) : 0
+      if (kind !== "day") {
+        for (var d = 0; d < dated.length; d++) tokens += Number(dated[d].messageCount || 0)
+        if (p.periodTotals && p.periodTotals[kind] !== undefined) tokens = Number(p.periodTotals[kind])
+        else if (kind === "total") tokens = UsageMath.mapTotal(modelMap)
+      }
+      var calls = kind === "day" ? Number(p.todayPrompts || 0) : kind === "total" ? Number(p.totalPrompts || 0) : 0
+      if (kind === "week" || kind === "month")
+        for (var c = 0; c < dated.length; c++) calls += Number(dated[c].prompts || 0)
       out.push({ id: p.providerId, name: p.chipName || p.providerName,
-        current: usage.todayFieldsAreCurrent(p), tokens: p.todayTotalTokens,
-        calls: p.todayPrompts, models: periodModelMap(p, "day"), synced: Number(p.syncDeviceCount || 0) > 1 })
+        current: kind !== "day" || usage.todayFieldsAreCurrent(p), tokens: tokens,
+        calls: calls, models: modelMap, days: dated,
+        canonical: provider && provider.providerId === "all", localRouter: p.usageOrigin === "local-db",
+        synced: Number(p.syncDeviceCount || 0) > 1 })
     }
     return out
   }
 
   function daysForPeriod(p, kind) {
+    var today = root.todayDate()
     if (!p) return []
     if (kind === "total") return []
-    if (kind === "week") return p.recentDays || []
     var start = periodStartDate(kind)
     var hist = (p.history && p.history.length) ? p.history : (p.recentDays || [])
     var out = []
     for (var i = 0; i < hist.length; i++) {
       var row = hist[i] || {}
       var date = String(row.date || "")
+      if (date > today) continue
       if (start !== "" && date < start) continue
       if (kind === "month" && Number(row.messageCount || 0) <= 0) continue
       out.push(row)
@@ -764,34 +803,11 @@ Panel {
     return n
   }
 
-  // Codex and Claude ship all-time modelUsage plus daily totals, but no
-  // per-day tokensByModel. Hermes and Grok do. Cursor's modelUsage is the
-  // current billing cycle. Sum each harness on its own, then combine — and
-  // never substitute all-time/cycle modelUsage for a bounded period. That
-  // fallback is how 1B of Grok Bot showed up under Day.
+  // Collector fallback for sources without a local ledger. Explicit period
+  // models win; otherwise use only dated history within the selected window.
+  // Lifetime or billing-cycle models never stand in for a bounded period.
   function periodModelMap(p, kind) {
     if (!p) return {}
-    if (p.providerId === "all") {
-      var combined = ({})
-      var list = root.providers || []
-      var routers = []
-      for (var i = 0; i < list.length; i++) {
-        var child = list[i]
-        if (!child || child.providerId === "all") continue
-        if (child.providerId === "9router") {
-          routers.push(child)
-          continue
-        }
-        var part = periodModelMap(child, kind)
-        for (var id in part) addTokenValue(combined, id, part[id])
-      }
-      for (var r = 0; r < routers.length; r++) {
-        var routerPart = periodModelMap(routers[r], kind)
-        for (var rid in routerPart)
-          addTokenValue(combined, usage.allModelKey(rid, combined), routerPart[rid])
-      }
-      return combined
-    }
     if (kind === "total") return p.modelUsage || ({})
     var explicit = p.periodTokensByModel || ({})
     if (explicit[kind] && Object.keys(explicit[kind]).length > 0) return explicit[kind]
@@ -804,6 +820,7 @@ Panel {
       var row = hist[h] || {}
       var date = String(row.date || "")
       if (start !== "" && date < start) continue
+      if (date > today) continue
       var models = row.tokensByModel || ({})
       var before = usageMapTotal(tokenUsage)
       for (var mid in models) addTokenValue(tokenUsage, mid, models[mid])
@@ -838,16 +855,8 @@ Panel {
     // instead of taking a section of their own. Billing-API agents never
     // count prompts, and "0 prompts" would read as a quiet day, not a gap.
     if (today && provider && provider.hasPromptStats !== false)
-      text += " · " + Number(provider.todayPrompts || 0) + " prompts · "
-        + Number(provider.todaySessions || 0) + " sessions"
+      text += " · " + Number(accountingSnapshot.calls || 0) + " chamadas registradas"
     return text
-  }
-
-  function weekPeak(p) {
-    var days = p ? (p.recentDays || []) : []
-    var peak = 0
-    for (var i = 0; i < days.length; i++) peak = Math.max(peak, Number(days[i].messageCount || 0))
-    return peak
   }
 
   function modelRowsFromUsage(usageByModel, cap) {
@@ -861,6 +870,7 @@ Panel {
       var total = input + output + cacheRead + cacheWrite
       if (total <= 0) continue
       rows.push({
+        id: id,
         name: usage.friendlyModelName(id),
         total: total,
         input: input,
@@ -870,12 +880,15 @@ Panel {
       })
     }
     rows.sort(function(a, b) { return b.total - a.total })
-    return rows.slice(0, cap)
-  }
-
-  function modelRows(p, kind) {
-    var cap = (kind === "total" || (p && p.providerId === "all")) ? 12 : 8
-    return modelRowsFromUsage(periodModelMap(p, kind || "week"), cap)
+    if (rows.length <= cap) return rows
+    var shown = rows.slice(0, Math.max(1, cap - 1))
+    var other = { id: "__other", name: "Outros modelos (" + (rows.length - shown.length) + ")",
+      total: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
+    for (var r = shown.length; r < rows.length; r++) {
+      for (var field in other) if (typeof other[field] === "number") other[field] += rows[r][field]
+    }
+    shown.push(other)
+    return shown
   }
 
   // The ledger keeps one total per model (no in/out/cache split), which is
@@ -887,19 +900,33 @@ Panel {
     return modelRowsFromUsage(map, provider && provider.providerId === "all" ? 12 : 8)
   }
 
+  function snapshotModelRows() {
+    var map = ({})
+    for (var id in accountingSnapshot.models) addTokenValue(map, id, accountingSnapshot.models[id])
+    return modelRowsFromUsage(map, provider && provider.providerId === "all" ? 12 : 8)
+  }
+
   function modelTooltip(row) {
     if (!row) return ""
-    if (row.output === 0 && row.cacheRead === 0 && row.cacheWrite === 0)
-      return usage.formatTokenCount(row.total) + " tokens"
+    var lines = [usage.formatTokenCount(row.total) + " tokens · " + modelPeriodLabel()]
+    var parts = (accountingSnapshot.modelSources || {})[row.id] || ({})
+    for (var source in parts) lines.push(source + ": " + usage.formatTokenCount(parts[source]))
+    if (row.output === 0 && row.cacheRead === 0 && row.cacheWrite === 0) return lines.join("\n")
     return "In " + usage.formatTokenCount(row.input)
       + " · out " + usage.formatTokenCount(row.output)
       + " · cache read " + usage.formatTokenCount(row.cacheRead)
       + " · cache write " + usage.formatTokenCount(row.cacheWrite)
   }
 
+  function modelPeriodLabel() {
+    return period === "hour" || period === "day" ? "HOJE, ACUMULADO"
+      : period === "week" ? "ÚLTIMOS 7 DIAS" : period === "month" ? "ÚLTIMOS 30 DIAS" : "TODO O HISTÓRICO DISPONÍVEL"
+  }
+
   // Only speaks up when the numbers cover more than this machine.
   function footerText() {
     if (usage.syncStatusText !== "") return usage.syncStatusText
+    if (!root.accountingReady) return ""
     if (provider && provider.providerId === "9router" && (provider.sources || []).length > 0) {
       var sourceBits = []
       var sources = provider.sources || []
@@ -909,15 +936,15 @@ Panel {
         if (!label) continue
         sourceBits.push(label + (source.available === false ? " unavailable" : " " + usage.formatTokenCount(Number(source.tokens || 0))))
       }
-      if (sourceBits.length > 0) return sourceBits.join(" · ")
+      if (sourceBits.length > 0) return "Histórico dos serviços: " + sourceBits.join(" · ")
     }
     if (provider && provider.providerId === "all") {
       // The list on screen is capped. Sum the whole map, or a new model
       // name makes the footer shrink even though nothing was deleted.
-      var tokens = usageMapTotal(periodModelMap(provider, root.period === "hour" ? "day" : root.period))
+      var tokens = accountingSnapshot.tokens
       var label = root.period === "hour" ? "today" : root.period === "day" ? "today" : root.period === "week" ? "this week" : root.period === "month" ? "this month" : "all time"
       var shown = root.models.length
-      var full = modelRowsFromUsage(periodModelMap(provider, root.period === "hour" ? "day" : root.period), 100000).length
+      var full = Object.keys(accountingSnapshot.models).length
       var extra = full > shown ? (" · " + shown + " de " + full + " modelos") : ""
       return usage.formatTokenCount(tokens) + " tokens " + label + " · every harness" + extra
     }
@@ -976,6 +1003,14 @@ Panel {
   }
 
   TrackingData {
+    id: historyData
+    active: root.opened && root.activeView === "provider" && root.period !== "hour" && root.period !== "day"
+    summary: true
+    period: root.period === "hour" ? "day" : root.period
+    provider: "all"
+  }
+
+  TrackingData {
     id: liveData
     active: root.opened && root.activeView === "live"
     live: true
@@ -1014,6 +1049,12 @@ Panel {
     function toggle(): void { root.toggle() }
     function refresh(): string { root.refreshNow(); return "ok" }
     function next(): string { root.selectProvider(root.providerIndex + 1); return "ok" }
+    function diagnostics(): string { return root.diagnostics() }
+  }
+
+  IpcHandler {
+    target: "lol.agents"
+    function diagnostics(): string { return root.diagnostics() }
   }
 
   BarIconButton {
@@ -1241,7 +1282,7 @@ Panel {
           // hint in authHelpText even when signed in. A real problem sets
           // both, so the box needs both.
           BorderSurface {
-            visible: !root.radarActive && !!root.provider
+            visible: !root.radarActive && root.accountingReady && !!root.provider
               && String(root.provider.usageStatusText || "") !== ""
               && String(root.provider.authHelpText || "") !== ""
             width: parent.width
@@ -1394,6 +1435,15 @@ Panel {
           }
 
           // ---------- Usage ----------
+          Text {
+            visible: !root.radarActive && !!root.provider
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: usage.formatTokenCount(root.accountingSnapshot.tokens) + " tokens · " + root.modelPeriodLabel().toLowerCase()
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.bodySmall
+          }
           PanelSeparator {
             visible: !root.radarActive && usageSection.visible
             foreground: root.foreground
@@ -1402,7 +1452,7 @@ Panel {
           Column {
             id: usageSection
             visible: {
-              if (root.radarActive) return false
+              if (root.radarActive || !root.accountingReady) return false
               var list = root.periodRows
               for (var i = 0; i < list.length; i++)
                 if (Number(list[i].messageCount || 0) > 0) return true
@@ -1473,7 +1523,7 @@ Panel {
           }
 
           Text {
-            visible: !root.radarActive && (root.period === "hour" || root.period === "day") && root.todaySnapshot.unassigned.length > 0
+            visible: !root.radarActive && root.accountingReady && (root.period === "hour" || root.period === "day") && root.todaySnapshot.unassigned.length > 0
             width: parent.width
             wrapMode: Text.WordWrap
             text: (root.todaySnapshot.unassigned.some(function(row) { return row.provider === "9router" })
@@ -1485,11 +1535,22 @@ Panel {
           }
 
           Text {
-            textFormat: Text.PlainText
-            visible: !root.radarActive && root.period === "hour" && !usageSection.visible
+            visible: !root.radarActive && root.accountingReady && root.accountingSnapshot.warnings.length > 0
             width: parent.width
-            text: hourData.error !== "" ? "Falha ao atualizar"
-              : (hourData.busy || !hourData.snapshot.hours ? "Lendo registros…" : "Sem registros hoje")
+            wrapMode: Text.WordWrap
+            text: root.accountingSnapshot.warnings.join("\n")
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: !root.radarActive && (!root.accountingReady || root.accountingError !== "" || root.accountingErrors.length > 0 || (!usageSection.visible && root.models.length === 0))
+            width: parent.width
+            text: root.accountingError !== "" ? root.accountingError
+              : root.accountingErrors.length > 0 ? "Leitura parcial: " + root.accountingErrors.length + " fonte(s) com erro."
+              : !root.accountingReady ? "Lendo registros…" : "Sem registros no período"
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -1503,13 +1564,13 @@ Panel {
 
           Column {
             id: modelSection
-            visible: !root.radarActive && root.models.length > 0
+            visible: !root.radarActive && root.accountingReady && root.models.length > 0
             width: parent.width
             spacing: Style.spacing.md
 
             PanelSectionHeader {
               width: parent.width
-              text: root.period === "total" ? "TOKENS BY MODEL (ALL TIME)" : "TOKENS BY MODEL"
+              text: "MODELOS · " + root.modelPeriodLabel()
               foreground: root.foreground
               fontFamily: root.fontFamily
             }

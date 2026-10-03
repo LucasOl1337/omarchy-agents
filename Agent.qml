@@ -15,6 +15,7 @@ Item {
 
   FileView {
     path: root.path
+    preload: true
     watchChanges: true
     printErrors: false
     onFileChanged: reload()
@@ -25,7 +26,9 @@ Item {
   function parse(content) {
     try {
       var parsed = JSON.parse(String(content || ""))
-      root.record = parsed && typeof parsed === "object" ? parsed : null
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) { root.record = null; return }
+      if (!parsed.id) parsed.id = root.agentId
+      root.record = parsed
     } catch (e) {
       console.warn("agents", "Ignoring bad usage record", root.path, e)
       root.record = null
