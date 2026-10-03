@@ -4,6 +4,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "TodayUsage.js" as TodayUsage
 
 Panel {
   id: root
@@ -69,10 +70,14 @@ Panel {
   property double nowMs: Date.now()
 
   readonly property var limits: limitWindows(provider)
-  readonly property var models: period === "hour" ? hourlyModelRows() : modelRows(provider, period)
-  // Hour rows come from the tracking ledger (per-event timestamps); the
-  // usage records only carry per-day buckets.
-  readonly property var periodRows: period === "hour" ? hourlyRows() : daysForPeriod(provider, period)
+  readonly property var todaySnapshot: TodayUsage.combine(hourData.snapshot, todayProviderSummaries(),
+    function(id, existing) { return usage.allModelKey(id, existing) }, new Date(todayDate() + "T00:00:00").getTime() / 1000)
+  readonly property var models: period === "hour" || period === "day" ? todayModelRows() : modelRows(provider, period)
+  // Both views use one snapshot. Usage without local timestamps is kept
+  // separate in Hour, so folding rows cannot change the Day total.
+  readonly property var periodRows: period === "hour" ? hourlyRows() : period === "day"
+    ? [{ date: todayDate(), messageCount: todaySnapshot.tokens }]
+    : daysForPeriod(provider, period)
   readonly property var headline: bindingWindow(provider)
   readonly property var balance: provider ? (provider.balance || null) : null
   // A prepaid account runs low the way a subscription window fills up: the
@@ -98,16 +103,16 @@ Panel {
     else if (activeView === "radar") usage.forceRefresh()
     else {
       usage.forceRefresh()
-      if (period === "hour") hourData.forceRefresh()
+      if (period === "hour" || period === "day") hourData.forceRefresh()
     }
   }
 
-  readonly property bool refreshBusy: usage.updating || (period === "hour" && hourData.busy)
+  readonly property bool refreshBusy: usage.updating || ((period === "hour" || period === "day") && hourData.busy)
 
   // "lido 16:52" next to the button; the hour ledger's own stamp when Hour is
   // on screen, else the last finished collector run.
   function lastReadLabel() {
-    var ms = period === "hour" && hourData.updatedAt > 0 ? hourData.updatedAt * 1000 : usage.lastUpdateMs
+    var ms = (period === "hour" || period === "day") && hourData.updatedAt > 0 ? hourData.updatedAt * 1000 : usage.lastUpdateMs
     if (!(ms > 0)) return ""
     return "lido " + Qt.formatDateTime(new Date(ms), "HH:mm")
   }
@@ -643,31 +648,7 @@ Panel {
   // carry nothing worth a row each, and past hourlyRowCap the oldest hours
   // with usage fold too. Day totals stay intact either way.
   function hourlyRows() {
-    if (provider && provider.providerId === "9router" && (provider.todayHours || []).length > 0) {
-      var apiRows = []
-      var currentHour = Qt.formatDateTime(new Date(), "HH:00")
-      var rawHours = provider.todayHours || []
-      for (var apiIndex = 0; apiIndex < rawHours.length; apiIndex++) {
-        var apiHour = rawHours[apiIndex] || {}
-        var apiTokens = Number(apiHour.messageCount || 0)
-        var sourceParts = []
-        var hourSources = apiHour.sources || ({})
-        for (var sourceName in hourSources)
-          if (Number(hourSources[sourceName] || 0) > 0)
-            sourceParts.push(sourceName + " " + usage.formatTokenCount(Number(hourSources[sourceName] || 0)))
-        apiRows.push({
-          date: "",
-          messageCount: apiTokens,
-          current: String(apiHour.label || "") === currentHour,
-          label: String(apiHour.label || ""),
-          tooltip: String(apiHour.label || "") + " · " + usage.formatTokenCount(apiTokens) + " tokens"
-            + (sourceParts.length > 0 ? "\n  " + sourceParts.join(" · ") : "")
-        })
-      }
-      if (root.hourlyNewestFirst) apiRows.reverse()
-      return apiRows
-    }
-    var snap = hourData.snapshot || ({})
+    var snap = root.todaySnapshot
     var list = snap.hours || []
     var idle = 0
     while (idle < list.length && Number((list[idle] || {}).tokens || 0) <= 0) idle++
@@ -711,6 +692,24 @@ Panel {
       })
     }
     if (root.hourlyNewestFirst) out.reverse()
+    for (var u = 0; u < snap.unassigned.length; u++) {
+      var unknown = snap.unassigned[u]
+      out.push({ date: "", messageCount: unknown.tokens, current: false, unassigned: true,
+        label: unknown.label, tooltip: unknown.tooltip })
+    }
+    return out
+  }
+
+  function todayProviderSummaries() {
+    var list = provider && provider.providerId !== "all" ? [provider] : root.providers
+    var out = []
+    for (var i = 0; i < list.length; i++) {
+      var p = list[i]
+      if (!p || p.providerId === "all") continue
+      out.push({ id: p.providerId, name: p.chipName || p.providerName,
+        current: usage.todayFieldsAreCurrent(p), tokens: p.todayTotalTokens,
+        calls: p.todayPrompts, models: periodModelMap(p, "day"), synced: Number(p.syncDeviceCount || 0) > 1 })
+    }
     return out
   }
 
@@ -881,13 +880,11 @@ Panel {
 
   // The ledger keeps one total per model (no in/out/cache split), which is
   // the same shape a plain numeric tokensByModel entry already has.
-  function hourlyModelRows() {
-    if (provider && provider.providerId === "9router")
-      return modelRowsFromUsage(periodModelMap(provider, "day"), 8)
+  function todayModelRows() {
     var map = ({})
-    var models = (hourData.snapshot && hourData.snapshot.models) || ({})
+    var models = root.todaySnapshot.models || ({})
     for (var id in models) addTokenValue(map, id, models[id])
-    return modelRowsFromUsage(map, 8)
+    return modelRowsFromUsage(map, provider && provider.providerId === "all" ? 12 : 8)
   }
 
   function modelTooltip(row) {
@@ -985,14 +982,13 @@ Panel {
     period: "day"
   }
 
-  // The ledger only scans while a view asks for it; tying `active` to the
-  // Hour period keeps the buckets current without a permanent 30 s scan.
+  // Switching Hour/Day retains the same read instead of changing sources.
   TrackingData {
     id: hourData
-    active: root.opened && root.activeView === "provider" && root.period === "hour"
+    active: root.opened && root.activeView === "provider" && (root.period === "hour" || root.period === "day")
     hours: 24
     today: true
-    provider: root.provider ? root.provider.providerId : "all"
+    provider: "all"
   }
 
   Main {
@@ -1422,7 +1418,7 @@ Panel {
               for (var i = 0; i < list.length; i++) {
                 // A folded morning sums several hours; letting it set the
                 // peak would squash every real hour bar.
-                if (list[i].folded === true) continue
+                if (list[i].folded === true || list[i].unassigned === true) continue
                 high = Math.max(high, Number(list[i].messageCount || 0))
               }
               return Math.max(1, high)
@@ -1476,9 +1472,18 @@ Panel {
             }
           }
 
-          // Agents the ledger does not index (Cursor, Antigravity, Fireworks
-          // report through billing APIs) land here on Hour: an honest empty
-          // state instead of a chart that silently shows another window.
+          Text {
+            visible: !root.radarActive && (root.period === "hour" || root.period === "day") && root.todaySnapshot.unassigned.length > 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: (root.todaySnapshot.unassigned.some(function(row) { return row.provider === "9router" })
+              ? "9Router usa o dia de cada serviço. " : "")
+              + "Uso sem horário local aparece separado em Hour."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+          }
+
           Text {
             textFormat: Text.PlainText
             visible: !root.radarActive && root.period === "hour" && !usageSection.visible
@@ -1663,7 +1668,8 @@ Panel {
       font.bold: dayRow.today
       anchors.left: parent.left
       anchors.verticalCenter: parent.verticalCenter
-      width: Style.space(52)
+      width: dayRow.day && dayRow.day.unassigned ? Math.min(implicitWidth, dayRow.width * 0.65) : Style.space(52)
+      elide: Text.ElideRight
     }
 
     Rectangle {

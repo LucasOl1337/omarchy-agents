@@ -100,6 +100,9 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(snap['tokens'], 230)
         self.assertEqual(snap['calls'], 6)
         self.assertEqual(snap['models'], {'swe-2-max': 150, 'swe-2-medium': 10, 'gpt-5.6': 30, 'gpt-5.6-sol(medium)': 40})
+        self.assertEqual(snap['byProvider']['devin']['tokens'], 160)
+        self.assertEqual(sum(h['tokens'] for h in snap['byProvider']['devin']['hours']), 160)
+        self.assertEqual(snap['byProvider']['9router']['tokens'], 40)
         args.provider = 'devin'
         snap = t.hourly(db, args, [], {})
         self.assertEqual(snap['tokens'], 160)
@@ -119,6 +122,7 @@ class TrackingTests(unittest.TestCase):
             ('a', 'devin', 'swe-2-max', this_hour.timestamp(), 100, 2, '{}'),
             ('b', 'devin', 'swe-2-max', midnight.timestamp(), 50, 1, '{}'),
             ('c', 'devin', 'swe-2-max', midnight.timestamp() - 3600, 777, 1, '{}'),
+            ('future', 'devin', 'swe-2-max', now.timestamp() + 3600, 999, 1, '{}'),
         ]
         for rid, provider, model, ts, tokens, calls, data in rows:
             db.execute('INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)',

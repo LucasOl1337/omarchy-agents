@@ -5,7 +5,7 @@ Richer **Agents** panel for [Omarchy](https://omarchy.org/): one robot icon in t
 This is the panel that runs on my Omarchy desktop. Stock `omarchy.agents` only charts Claude, Codex, and Fireworks over the last seven days. This checkout adds:
 
 - **All** tab that sums every harness
-- **Hour / Day / Week / Month / Total** token filters (Hour reads per-event buckets from the local tracking ledger, so it covers the agents with local session files)
+- **Hour / Day / Week / Month / Total** token filters. Hour and Day share one snapshot: dated local events supply the hours; remote or billing usage without local timestamps appears separately as “sem horário”. Their totals and model breakdowns use the same sources, including 9Router in All.
 - **Antigravity** and **Hermes** collectors
 - **Projects** and **live** views: local sessions, compact project rows, on-demand message previews
 - **Radar** tab: ranks live quotas so you know which subscription to burn next (headroom, reset countdown, exhausted pools called out)

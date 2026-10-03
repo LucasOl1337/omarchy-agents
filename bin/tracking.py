@@ -471,15 +471,16 @@ def hourly(db, args, errors, counts, metrics=None):
     else:
         window = max(1, min(24 * 7, int(args.hours or 24)))
         first = current - timedelta(hours=window - 1)
-    clauses, params = ['timestamp>=?'], [first.timestamp()]
+    clauses, params = ['timestamp>=?', 'timestamp<=?'], [first.timestamp(), now.timestamp()]
     extra, extra_params = provider_clause(args.provider)
     clauses.append(extra)
     params.extend(extra_params)
     where = ' AND '.join(clauses)
     buckets = {}
     models = {}
+    by_provider = {}
     total = calls = 0
-    for ts, tokens, n_calls, model, pid in db.execute(f'SELECT timestamp,tokens,calls,model,project FROM events WHERE {where}', params):
+    for ts, tokens, n_calls, model, pid, provider in db.execute(f'SELECT timestamp,tokens,calls,model,project,provider FROM events WHERE {where}', params):
         start = datetime.fromtimestamp(ts).replace(minute=0, second=0, microsecond=0).timestamp()
         bucket = buckets.setdefault(start, dict(tokens=0, calls=0, models={}, projects={}))
         bucket['tokens'] += tokens
@@ -490,6 +491,15 @@ def hourly(db, args, errors, counts, metrics=None):
         name = project_name(pid)
         bucket['projects'][name] = bucket['projects'].get(name, 0) + tokens
         models[model] = models.get(model, 0) + tokens
+        part = by_provider.setdefault(provider, dict(tokens=0, calls=0, models={}, hours={}))
+        part['tokens'] += tokens
+        part['calls'] += n_calls
+        part['models'][model] = part['models'].get(model, 0) + tokens
+        hour = part['hours'].setdefault(start, dict(start=start, tokens=0, calls=0, models={}, projects={}))
+        hour['tokens'] += tokens
+        hour['calls'] += n_calls
+        hour['models'][model] = hour['models'].get(model, 0) + tokens
+        hour['projects'][name] = hour['projects'].get(name, 0) + tokens
         total += tokens
         calls += n_calls
     hours = []
@@ -499,7 +509,9 @@ def hourly(db, args, errors, counts, metrics=None):
         hours.append(dict(start=start, tokens=bucket['tokens'], calls=bucket['calls'],
                           models=bucket['models'], projects=bucket['projects'],
                           current=start == current.timestamp()))
-    return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours,
+    for part in by_provider.values():
+        part['hours'] = [part['hours'][start] for start in sorted(part['hours'])]
+    return dict(updatedAt=time.time(), provider=args.provider, windowHours=window, hours=hours, byProvider=by_provider,
                 models=models, tokens=total, calls=calls, errors=errors, sources=counts,
                 scan=metrics or {})
 
